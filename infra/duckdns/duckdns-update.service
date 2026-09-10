@@ -1,0 +1,13 @@
+[Unit]
+Description=Update DuckDNS record for the calling agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/duckdns-update.sh
+# The token is a credential; keep the unit from reaching anything else.
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes

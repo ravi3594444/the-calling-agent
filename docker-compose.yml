@@ -1,0 +1,29 @@
+# Local: `docker compose up app` and open http://localhost:8080
+# Server: `docker compose --profile tls up -d` for automatic HTTPS via Caddy.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: 8080
+    ports:
+      # Bound to loopback; Caddy terminates TLS and proxies in.
+      - "127.0.0.1:8080:8080"
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["tls"]
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      # e.g. my-agent.duckdns.org
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:?set PUBLIC_HOSTNAME in .env}
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

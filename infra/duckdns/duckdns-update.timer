@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh the DuckDNS record every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+# Spread the request slightly so we are not hammering a fixed instant.
+RandomizedDelaySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

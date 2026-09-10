@@ -1,0 +1,29 @@
+# Caddy obtains and renews a Let's Encrypt certificate automatically via
+# HTTP-01, which needs inbound :80 and :443 reachable and PUBLIC_HOSTNAME
+# already resolving to this machine.
+#
+# TLS is not optional here: browsers block getUserMedia on insecure origins,
+# so without a valid certificate the microphone will never be granted.
+
+{$PUBLIC_HOSTNAME} {
+	encode zstd gzip
+
+	# WebSocket upgrades pass through untouched; long-lived audio streams must
+	# not be cut off by a proxy read timeout.
+	reverse_proxy 127.0.0.1:8080 {
+		flush_interval -1
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# The page only needs its own microphone.
+		Permissions-Policy "microphone=(self), camera=(), geolocation=()"
+	}
+
+	log {
+		output stderr
+		format console
+	}
+}

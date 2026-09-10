@@ -1,0 +1,7 @@
+# Vercel's Python runtime installs from this file at build time.
+# Keep in sync with the `dependencies` list in pyproject.toml.
+fastapi>=0.115
+websockets>=13.1
+pydantic>=2.9
+pydantic-settings>=2.6
+python-dotenv>=1.0
