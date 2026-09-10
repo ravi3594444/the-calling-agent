@@ -21,9 +21,15 @@ log = logging.getLogger(__name__)
 
 
 class AgentSession:
-    def __init__(self, transport: AudioTransport, resume_session_id: str | None = None) -> None:
+    def __init__(
+        self,
+        transport: AudioTransport,
+        resume_session_id: str | None = None,
+        voice: str | None = None,
+    ) -> None:
         self._transport = transport
         self._resume_session_id = resume_session_id
+        self._voice = voice
         self._session_id: str | None = None
         self._ready = False
 
@@ -81,7 +87,9 @@ class AgentSession:
                 opening = build_session_resume(self._resume_session_id)
                 log.info("resuming session %s", self._resume_session_id)
             else:
-                opening = build_session_update(self._transport.encoding, tune_turns=tune_turns)
+                opening = build_session_update(
+                    self._transport.encoding, tune_turns=tune_turns, voice=self._voice
+                )
             await upstream.send(json.dumps(opening))
             log.info(
                 "upstream connected (encoding=%s, %d Hz, turn_tuning=%s)",

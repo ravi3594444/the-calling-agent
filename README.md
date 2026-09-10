@@ -97,6 +97,39 @@ To change what the agent says or add tools, edit `agent_config.py` — the
 `get_current_time` tool is there as a worked example of the JSON Schema shape
 and the `tool.call` → `tool.result` round trip.
 
+## Choosing a voice
+
+The page has a **voice picker** under the call button; your choice is
+remembered in the browser. It only applies to the next call, since changing
+voice needs a new session.
+
+| Voice | |
+|---|---|
+| `arjun` | **Multilingual** — Hindi / Hinglish, code-switches with English. The default. |
+| `diego` | Multilingual — Latin American Spanish |
+| `james` | English — conversational US male, the most natural of the English voices |
+| `sophie` | English — clear UK female |
+| `claire` | English — US female |
+| `ivy` | English — US female. Lighter and more synthetic; the API's own example, and not a good default. |
+
+These are the ids verified to work. AssemblyAI publishes **18 English and 16
+multilingual** voices, so an id not listed here may still be valid — try it
+with `/ws?voice=<id>`, which overrides `AGENT_VOICE` for a single call. `GET
+/voices` returns the list the picker uses.
+
+Multilingual voices code-switch automatically, and the system prompt tells the
+agent to reply in whatever language it is addressed in — including mixing two
+languages mid-sentence, the way people actually speak. A multilingual voice
+paired with an English-only prompt would waste half of what you are paying for.
+
+### If it sounds robotic
+
+The voice model is only half of it. Written-sounding sentences read as
+synthetic no matter who speaks them, so `SYSTEM_PROMPT` in
+`src/calling_agent/agent_config.py` pushes for contractions, short turns,
+varied sentence length, and natural openers. Edit that before concluding a
+voice is bad.
+
 ## Making it feel faster
 
 Most of the delay is upstream: AssemblyAI advertises **~1 s end-to-end** for

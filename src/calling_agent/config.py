@@ -14,7 +14,10 @@ class Settings(BaseSettings):
         default="wss://agents.assemblyai.com/v1/ws", alias="ASSEMBLYAI_AGENT_WS_URL"
     )
 
-    agent_voice: str = Field(default="ivy", alias="AGENT_VOICE")
+    # "arjun" is a multilingual Hindi/Hinglish voice that code-switches with
+    # English automatically -- the right default for Indian callers. "ivy",
+    # the API's own example, is lighter and reads as more synthetic.
+    agent_voice: str = Field(default="arjun", alias="AGENT_VOICE")
     agent_greeting: str = Field(
         default="Hi! I'm your calling agent. What can I help you with?",
         alias="AGENT_GREETING",

@@ -359,3 +359,30 @@ def test_turn_detection_carries_the_latency_settings(upstream):
     assert set(td) == {"vad_threshold", "min_silence", "max_silence", "interrupt_response"}
     # Lower min_silence is what makes replies feel fast.
     assert td["min_silence"] < td["max_silence"]
+
+
+def test_voice_can_be_overridden_per_call(upstream):
+    """Comparing voices by ear must not need a redeploy."""
+    upstream.will_send({"type": "session.ready", "session_id": "s-1"})
+    with _client().websocket_connect("/ws?voice=sophie") as ws:
+        _drain(ws, "event")
+
+    assert upstream.received[0]["session"]["output"]["voice"] == "sophie"
+
+
+def test_default_voice_is_used_when_none_is_given(upstream):
+    from calling_agent.config import settings
+
+    upstream.will_send({"type": "session.ready", "session_id": "s-1"})
+    with _client().websocket_connect("/ws") as ws:
+        _drain(ws, "event")
+
+    assert upstream.received[0]["session"]["output"]["voice"] == settings.agent_voice
+
+
+def test_voices_endpoint_lists_the_multilingual_options(upstream):
+    body = _client().get("/voices").json()
+    assert body["current"]
+    # arjun code-switches Hindi/English, which is why it is the default.
+    assert "arjun" in body["known"]
+    assert "Multilingual" in body["known"]["arjun"]

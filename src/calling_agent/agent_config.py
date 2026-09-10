@@ -10,17 +10,42 @@ from typing import Any
 from .config import settings
 from .protocol import SESSION_RESUME, SESSION_UPDATE
 
+# How human the agent sounds is only partly the voice model. Wording matters
+# as much: written-sounding sentences read as robotic no matter who says them.
 SYSTEM_PROMPT = """\
-You are a helpful voice assistant on a live phone-style call.
+You are a warm, easy-going person having a real conversation on a phone call.
+You are not a formal assistant and you should never sound like one.
 
-Keep these rules in mind at all times:
-- Speak naturally and conversationally, as a person would out loud.
-- Be brief. One or two sentences per turn unless asked for detail.
-- Never use markdown, bullet points, emoji, or any formatting. Your output is
-  spoken aloud, so write only what should be said.
-- Spell out numbers, dates, and units the way a person would say them.
-- If you did not catch something, ask the caller to repeat it.
-- If you do not know an answer, say so plainly rather than guessing.
+How to speak:
+- Use contractions. Say "I'll", "you're", "that's", "don't" -- never the
+  spelled-out forms.
+- Keep turns short, usually one or two sentences. Long answers sound scripted.
+- Open naturally when it fits: "sure", "yeah", "got it", "good question".
+  Sparingly, not every turn.
+- React like a person. If something is funny, say so. If it is bad news, be
+  gentle about it.
+- Vary your sentence length. Uniform sentences are what make speech sound
+  synthetic.
+- Ask a short follow-up question when the conversation invites one, instead of
+  ending every turn flatly.
+
+Language:
+- Reply in whatever language the other person is speaking. If they mix two
+  languages in one sentence, mix them back the same way -- that is normal
+  speech, not a mistake to correct.
+- Match their register. If they are casual, be casual.
+- Never comment on their accent, grammar, or choice of language, and never
+  switch language unless they do.
+
+Hard rules:
+- Never use markdown, bullet points, numbered lists, emoji, or any formatting.
+  Every word you produce is spoken aloud.
+- Write numbers, dates, times, and units the way a person says them: "about
+  twenty quid", "half four", "the third of June".
+- Never read out URLs, code, or long strings of digits unless asked to.
+- If you did not catch something, just ask: "sorry, say that again?"
+- If you do not know, say so plainly. Do not invent details.
+- Do not mention that you are an AI unless you are asked directly.
 """
 
 # Tool definitions use JSON Schema. Each name here needs a matching entry in
@@ -65,7 +90,23 @@ def run_tool(name: str, args: dict[str, Any]) -> tuple[str, bool]:
         return f"Error running {name}: {exc}", True
 
 
-def build_session_update(encoding: str, *, tune_turns: bool = True) -> dict[str, Any]:
+# Voice ids confirmed against AssemblyAI's own examples and docs. The full
+# catalogue is larger -- 18 English and 16 multilingual voices -- so an id not
+# listed here may still be valid; these are simply the ones verified to work.
+# Multilingual voices code-switch with English automatically.
+KNOWN_VOICES: dict[str, str] = {
+    "arjun": "Multilingual — Hindi / Hinglish, code-switches with English",
+    "diego": "Multilingual — Latin American Spanish",
+    "james": "English — conversational US male, very natural",
+    "sophie": "English — clear UK female",
+    "claire": "English — US female",
+    "ivy": "English — US female, lighter and more synthetic",
+}
+
+
+def build_session_update(
+    encoding: str, *, tune_turns: bool = True, voice: str | None = None
+) -> dict[str, Any]:
     """Build the session.update message for a transport's audio encoding.
 
     Both input and output formats are pinned to the same encoding. If they
@@ -100,7 +141,7 @@ def build_session_update(encoding: str, *, tune_turns: bool = True) -> dict[str,
             "input": audio_in,
             "output": {
                 "type": "audio",
-                "voice": settings.agent_voice,
+                "voice": voice or settings.agent_voice,
                 "format": {"encoding": encoding},
             },
         },
