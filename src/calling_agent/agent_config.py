@@ -27,12 +27,15 @@ Keep these rules in mind at all times:
 # TOOL_IMPLEMENTATIONS below.
 TOOLS: list[dict[str, Any]] = [
     {
+        "type": "function",
         "name": "get_current_time",
         "description": (
             "Get the current date and time in UTC. Use when the caller asks "
             "what time or what day it is."
         ),
-        "input_schema": {"type": "object", "properties": {}, "required": []},
+        # Note: "parameters", not "input_schema". The API rejects the whole
+        # session with a 1008 policy violation if this shape is wrong.
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
 ]
 
@@ -47,15 +50,19 @@ TOOL_IMPLEMENTATIONS = {
 }
 
 
-def run_tool(name: str, args: dict[str, Any]) -> str:
-    """Execute a tool call and return its result as a string."""
+def run_tool(name: str, args: dict[str, Any]) -> tuple[str, bool]:
+    """Execute a tool call.
+
+    Returns (result, is_error) -- the API wants errors flagged rather than
+    disguised as a successful result, so the agent can say something sensible.
+    """
     impl = TOOL_IMPLEMENTATIONS.get(name)
     if impl is None:
-        return f"Error: no tool named {name}."
+        return f"No tool named {name}.", True
     try:
-        return impl(args)
-    except Exception as exc:  # surfaced to the agent, not the user
-        return f"Error running {name}: {exc}"
+        return impl(args), False
+    except Exception as exc:  # reported to the agent, not raised at the caller
+        return f"Error running {name}: {exc}", True
 
 
 def build_session_update(encoding: str) -> dict[str, Any]:
@@ -76,8 +83,9 @@ def build_session_update(encoding: str) -> dict[str, Any]:
             "system_prompt": SYSTEM_PROMPT,
             "greeting": settings.agent_greeting,
             "tools": TOOLS,
-            "input": {"format": {"encoding": encoding}},
+            "input": {"type": "audio", "format": {"encoding": encoding}},
             "output": {
+                "type": "audio",
                 "voice": settings.agent_voice,
                 "format": {"encoding": encoding},
             },

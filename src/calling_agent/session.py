@@ -88,6 +88,35 @@ class AgentSession:
             if (exc := task.exception()) is not None:
                 log.error("%s failed: %s", task.get_name(), exc)
 
+        await self._report_close(upstream)
+
+    async def _report_close(self, upstream: ClientConnection) -> None:
+        """Explain an abnormal upstream close to the client.
+
+        Code 1008 is the API refusing the session -- almost always a malformed
+        session.update rather than anything transient -- so the reason it gives
+        is the single most useful thing to see. Logging it alone hides it inside
+        the platform's log viewer, where long lines get truncated.
+        """
+        code = upstream.close_code
+        if code in (None, 1000, 1001):
+            return
+
+        reason = (upstream.close_reason or "").strip()
+        log.error("upstream closed: code=%s reason=%r", code, reason)
+
+        if code == 1008:
+            detail = reason or "no reason given"
+            message = (
+                f"AssemblyAI rejected the session (1008 policy violation): {detail}. "
+                "This is a configuration problem, not a network one -- check the "
+                "session payload, voice name, and tool definitions."
+            )
+        else:
+            message = f"Agent connection closed unexpectedly (code {code}). {reason}".strip()
+
+        await self._transport.send_event({"type": "error", "code": code, "message": message})
+
     async def _client_to_agent(self, upstream: ClientConnection) -> None:
         async for chunk_b64 in self._transport.recv_audio():
             await upstream.send(json.dumps({"type": p.INPUT_AUDIO, "audio": chunk_b64}))
@@ -122,7 +151,11 @@ class AgentSession:
             await self._handle_tool_call(upstream, msg)
 
         elif kind == p.SESSION_ERROR:
-            log.error("upstream session error: %s", msg)
+            log.error(
+                "upstream session error: code=%s message=%s",
+                msg.get("code"),
+                msg.get("message"),
+            )
 
         # Forward everything non-audio so the page can show live transcripts
         # and connection state.
@@ -131,14 +164,17 @@ class AgentSession:
     async def _handle_tool_call(self, upstream: ClientConnection, msg: dict) -> None:
         name = msg.get("name", "")
         args = msg.get("arguments") or {}
-        result = await asyncio.to_thread(run_tool, name, args)
-        log.info("tool %s -> %s", name, result)
+        result, is_error = await asyncio.to_thread(run_tool, name, args)
+        log.info("tool %s -> %s%s", name, result, " (error)" if is_error else "")
         await upstream.send(
             json.dumps(
                 {
                     "type": p.TOOL_RESULT,
-                    "tool_call_id": msg.get("tool_call_id") or msg.get("id"),
+                    # The API pairs results by call_id; a wrong key leaves the
+                    # agent waiting on a tool that already ran.
+                    "call_id": msg.get("call_id"),
                     "result": result,
+                    "is_error": is_error,
                 }
             )
         )
