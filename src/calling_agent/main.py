@@ -39,11 +39,18 @@ async def index() -> FileResponse:
 
 
 @app.websocket("/ws")
-async def ws(websocket: WebSocket) -> None:
+async def ws(websocket: WebSocket, resume: str | None = None) -> None:
+    """Bridge one browser to one agent session.
+
+    `resume` carries a session id the client saw earlier. The client holds it
+    rather than the server because on a serverless platform the instance that
+    started the call is not necessarily the one handling the reconnect -- there
+    is no server-side memory to look it up in.
+    """
     await websocket.accept()
     client = websocket.client.host if websocket.client else "unknown"
-    log.info("browser connected from %s", client)
-    await AgentSession(BrowserTransport(websocket)).run()
+    log.info("browser connected from %s%s", client, " (resuming)" if resume else "")
+    await AgentSession(BrowserTransport(websocket), resume_session_id=resume).run()
     log.info("session for %s ended", client)
 
 

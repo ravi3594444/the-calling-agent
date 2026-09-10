@@ -32,8 +32,9 @@ class MockUpstream:
         async for raw in conn:
             msg = json.loads(raw)
             self.received.append(msg)
-            # Reply to the initial config with the scripted server events.
-            if msg.get("type") == "session.update":
+            # Reply to whichever opening message arrives -- a fresh session
+            # sends session.update, a reconnect sends session.resume.
+            if msg.get("type") in ("session.update", "session.resume"):
                 for out in self._script:
                     await conn.send(json.dumps(out))
 
@@ -178,3 +179,25 @@ def test_stored_agent_mode_sends_only_agent_id(upstream, monkeypatch):
 
     session = upstream.received[0]["session"]
     assert session == {"agent_id": "agent-abc"}
+
+
+def test_resume_rejoins_an_existing_session(upstream):
+    """A reconnect must resume, not start a fresh (and separately billed) session."""
+    upstream.will_send({"type": "session.ready", "session_id": "s-resumed"})
+    with _client().websocket_connect("/ws?resume=s-earlier") as ws:
+        _drain(ws, "event")
+
+    first = upstream.received[0]
+    assert first["type"] == "session.resume"
+    assert first["session_id"] == "s-earlier"
+    # No session.update should follow; resume restores the stored config.
+    assert not any(m["type"] == "session.update" for m in upstream.received)
+
+
+def test_session_ready_id_reaches_the_browser(upstream):
+    """The client stores this id; without it a reconnect cannot resume."""
+    upstream.will_send({"type": "session.ready", "session_id": "s-42"})
+    with _client().websocket_connect("/ws") as ws:
+        event = _drain(ws, "event")["event"]
+        assert event["type"] == "session.ready"
+        assert event["session_id"] == "s-42"

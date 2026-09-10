@@ -13,7 +13,7 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from . import protocol as p
-from .agent_config import build_session_update, run_tool
+from .agent_config import build_session_resume, build_session_update, run_tool
 from .config import settings
 from .transport.base import AudioTransport
 
@@ -21,8 +21,9 @@ log = logging.getLogger(__name__)
 
 
 class AgentSession:
-    def __init__(self, transport: AudioTransport) -> None:
+    def __init__(self, transport: AudioTransport, resume_session_id: str | None = None) -> None:
         self._transport = transport
+        self._resume_session_id = resume_session_id
         self._session_id: str | None = None
 
     async def run(self) -> None:
@@ -41,7 +42,12 @@ class AgentSession:
                 },
                 max_size=None,
             ) as upstream:
-                await upstream.send(json.dumps(build_session_update(self._transport.encoding)))
+                if self._resume_session_id:
+                    opening = build_session_resume(self._resume_session_id)
+                    log.info("resuming session %s", self._resume_session_id)
+                else:
+                    opening = build_session_update(self._transport.encoding)
+                await upstream.send(json.dumps(opening))
                 log.info(
                     "upstream connected (encoding=%s, %d Hz)",
                     self._transport.encoding,

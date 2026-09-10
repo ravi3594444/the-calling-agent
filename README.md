@@ -59,6 +59,17 @@ synthesis all happen upstream.
 added later without touching the relay. µ-law is byte-compatible with Telnyx and
 Twilio media streams, so that path needs no transcoding either.
 
+### Reconnect and resume
+
+If the socket drops mid-call, the client reconnects with exponential backoff
+(up to five attempts) and passes `?resume=<session_id>`, which makes the server
+send `session.resume` instead of starting a fresh session. The audio graph is
+kept alive across the reconnect — only the WebSocket is rebuilt.
+
+The browser holds the session id rather than the server because on a serverless
+platform the instance that started the call is not the one handling the
+reconnect.
+
 ### Two details worth knowing
 
 **Capture uses an AudioWorklet, not `MediaRecorder`.** `MediaRecorder` emits
@@ -104,6 +115,27 @@ make deploy-up     app + Caddy TLS (on the server)
 
 ## Deploying
 
-See [docs/DEPLOY.md](docs/DEPLOY.md) for the full path: `infra/gcp-setup.sh`
-provisions an `e2-small` with a reserved static IP, DuckDNS points a hostname at
-it, and Caddy obtains a Let's Encrypt certificate automatically.
+Two supported paths. The application code is identical for both — only the
+process boundary differs.
+
+### Vercel — fastest
+
+```bash
+vercel --prod
+vercel env add ASSEMBLYAI_API_KEY production
+```
+
+HTTPS on a real domain with no certificate work, no DuckDNS, and no VM. The
+catch: a WebSocket lives inside a Function and inherits its duration limit, so
+calls are cut every **5 minutes on Hobby** (up to 30 on Pro). The client handles
+this by reconnecting with `session.resume`, so the caller hears a gap rather
+than a dropped call. See [docs/VERCEL.md](docs/VERCEL.md).
+
+### Google Cloud VM — no duration cap
+
+`./infra/gcp-setup.sh` provisions an `e2-small` with a reserved static IP,
+DuckDNS points a hostname at it, and Caddy obtains a Let's Encrypt certificate
+automatically. Flat ~$20/mo, no call-length limit. Prefer this if you are adding
+telephony later, since a media stream held open for a whole call fights a
+platform that closes connections on a timer. See
+[docs/DEPLOY.md](docs/DEPLOY.md).

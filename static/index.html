@@ -91,6 +91,16 @@ let ws = null, ctx = null, micStream = null, workletNode = null, micSource = nul
 let nextPlayAt = 0;
 let liveSources = new Set();
 let partialEl = null;
+// Held so a reconnect can rejoin the same agent session rather than starting
+// (and separately billing) a new one. The API keeps it alive ~30s.
+let sessionId = null;
+let reconnectAttempt = 0;
+let reconnectTimer = null;
+
+const MAX_RECONNECT_ATTEMPTS = 5;
+// Serverless platforms close a WebSocket when the function hits its duration
+// limit, so a mid-call drop is expected rather than exceptional.
+const RECONNECT_BACKOFF_MS = [500, 1000, 2000, 4000, 8000];
 
 function setStatus(text, isError = false) {
   statusEl.textContent = text;
@@ -169,6 +179,8 @@ function stopPlayback() {
 function handleEvent(ev) {
   switch (ev.type) {
     case 'session.ready':
+      if (ev.session_id) sessionId = ev.session_id;
+      reconnectAttempt = 0;
       setStatus('Connected — go ahead and speak');
       break;
     case 'reply.started':
@@ -198,6 +210,60 @@ function handleEvent(ev) {
   }
 }
 
+/* ---------- socket lifecycle ---------- */
+
+function connectSocket() {
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  // Resuming is the client's job: on a serverless platform the instance that
+  // started the call is not the one handling the reconnect, so there is no
+  // server-side memory to look the session up in.
+  const query = sessionId ? `?resume=${encodeURIComponent(sessionId)}` : '';
+  const socket = new WebSocket(`${scheme}://${location.host}/ws${query}`);
+  ws = socket;
+
+  socket.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'audio') playChunk(msg.data);
+    else if (msg.type === 'clear') stopPlayback();   // barge-in
+    else if (msg.type === 'event') handleEvent(msg.event);
+  };
+
+  socket.onclose = () => {
+    // Only react if this is still the live socket and the user has not hung up.
+    if (socket !== ws || btn.dataset.state !== 'live') return;
+    scheduleReconnect();
+  };
+
+  return new Promise((resolve, reject) => {
+    socket.onopen = resolve;
+    socket.onerror = () => reject(new Error('WebSocket connection failed'));
+  });
+}
+
+function scheduleReconnect() {
+  if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+    endCall('Connection lost. Tap to start again.', true);
+    return;
+  }
+  const delay = RECONNECT_BACKOFF_MS[reconnectAttempt];
+  reconnectAttempt += 1;
+
+  // Queued playback belongs to a dead socket; dropping it avoids a stale
+  // fragment playing after we reconnect.
+  stopPlayback();
+  setStatus(`Reconnecting… (${reconnectAttempt}/${MAX_RECONNECT_ATTEMPTS})`);
+
+  reconnectTimer = setTimeout(async () => {
+    if (btn.dataset.state !== 'live') return;
+    try {
+      await connectSocket();
+      setStatus('Reconnected — keep going');
+    } catch {
+      scheduleReconnect();
+    }
+  }, delay);
+}
+
 /* ---------- call lifecycle ---------- */
 
 async function startCall() {
@@ -223,20 +289,7 @@ async function startCall() {
     await ctx.audioWorklet.addModule('/static/pcm-worklet.js');
 
     setStatus('Connecting to agent…');
-    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${scheme}://${location.host}/ws`);
-    await new Promise((resolve, reject) => {
-      ws.onopen = resolve;
-      ws.onerror = () => reject(new Error('WebSocket connection failed'));
-    });
-
-    ws.onmessage = (e) => {
-      const msg = JSON.parse(e.data);
-      if (msg.type === 'audio') playChunk(msg.data);
-      else if (msg.type === 'clear') stopPlayback();   // barge-in
-      else if (msg.type === 'event') handleEvent(msg.event);
-    };
-    ws.onclose = () => { if (btn.dataset.state === 'live') endCall('Call ended'); };
+    await connectSocket();
 
     micSource = ctx.createMediaStreamSource(micStream);
     workletNode = new AudioWorkletNode(ctx, 'pcm-capture', {
@@ -262,6 +315,10 @@ async function startCall() {
 }
 
 function endCall(message = 'Call ended', isError = false) {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  reconnectAttempt = 0;
+  sessionId = null;
   stopPlayback();
   workletNode?.port.close();
   micSource?.disconnect();

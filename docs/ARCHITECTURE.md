@@ -70,12 +70,33 @@ plus a 40 ms cushion rather than dumping queued audio at once.
 names and exceptions return an error *string* to the agent rather than raising,
 so a broken tool degrades the conversation instead of dropping the call.
 
+## Reconnect and resume
+
+A dropped socket is routine, not exceptional: any serverless host closes the
+connection when its function hits the duration limit. The recovery path:
+
+1. The client stores `session_id` from `session.ready`.
+2. On an unexpected close it retries with backoff — 0.5s, 1s, 2s, 4s, 8s — up
+   to five attempts, reconnecting to `/ws?resume=<session_id>`.
+3. The server sees `resume` and sends `session.resume` rather than
+   `session.update`, rejoining the session the API holds open for ~30 seconds.
+4. Queued playback is dropped on disconnect so no stale fragment plays after
+   the gap.
+
+The microphone stream, `AudioContext`, and worklet are **not** torn down during
+a reconnect; only the WebSocket is rebuilt. Re-acquiring the mic would prompt
+the user again and lose the audio graph.
+
+The client holds the session id because on a serverless platform the instance
+that started the call is not the one handling the reconnect — there is no
+server-side memory to look it up in.
+
 ## Known gaps
 
-- **`session.resume` is unimplemented.** The API offers a 30-second reconnect
-  window; `protocol.py` names the message but `session.py` does not yet use it.
-  A dropped upstream currently ends the call.
 - **No authentication on `/ws`.** Anyone who can reach the host can open a
   session and spend your AssemblyAI credit. Add a token check before exposing
   the URL publicly.
 - **No concurrency limit.** Each browser tab is one billed upstream session.
+- **A resumed session is not verified as still valid.** If the ~30-second
+  window has passed, the API's response to `session.resume` decides what
+  happens; the client does not fall back to starting a fresh session.
