@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Calling Agent</title>
+<!-- Inline icon: avoids a 404 on /favicon.ico with no extra request. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227%22%20fill%3D%22%230b0d10%22%2F%3E%3Crect%20x%3D%2213%22%20y%3D%227%22%20width%3D%226%22%20height%3D%2211%22%20rx%3D%223%22%20fill%3D%22%234ade80%22%2F%3E%3Cpath%20d%3D%22M10%2016a6%206%200%200%200%2012%200M16%2022v3.5%22%20stroke%3D%22%234ade80%22%20stroke-width%3D%222%22%20fill%3D%22none%22%20stroke-linecap%3D%22round%22%2F%3E%3C%2Fsvg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227%22%20fill%3D%22%230b0d10%22%2F%3E%3Crect%20x%3D%2213%22%20y%3D%227%22%20width%3D%226%22%20height%3D%2211%22%20rx%3D%223%22%20fill%3D%22%234ade80%22%2F%3E%3Cpath%20d%3D%22M10%2016a6%206%200%200%200%2012%200M16%2022v3.5%22%20stroke%3D%22%234ade80%22%20stroke-width%3D%222%22%20fill%3D%22none%22%20stroke-linecap%3D%22round%22%2F%3E%3C%2Fsvg%3E">
+<!-- Added to a phone home screen, this should open chrome-less like an app. -->
+<meta name="theme-color" content="#0b0d10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Calling Agent">
 <style>
   :root {
     --bg: #0b0d10; --panel: #14171c; --line: #232830;
@@ -15,10 +23,18 @@
     margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
     font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     display: flex; flex-direction: column; align-items: center;
+    /* Centred vertically so the control sits under the thumb on a phone
+       rather than stranded at the top of a tall screen. */
+    justify-content: center;
     padding: 24px 16px calc(24px + env(safe-area-inset-bottom));
   }
+  /* Once a transcript exists the stack grows downward from the top instead. */
+  body:has(#log:not(:empty)) { justify-content: flex-start; }
   h1 { font-size: 19px; font-weight: 600; margin: 8px 0 2px; letter-spacing: -0.01em; }
   .sub { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
+  /* Once a call is up, the status line says what is happening instead. */
+  body:has(#call[data-state="live"]) .sub,
+  body:has(#call[data-state="connecting"]) .sub { visibility: hidden; }
   #call {
     width: 148px; height: 148px; border-radius: 50%; border: none; cursor: pointer;
     background: var(--accent); color: #06240f; font-size: 16px; font-weight: 650;
@@ -26,6 +42,8 @@
     box-shadow: 0 0 0 0 rgba(74, 222, 128, .45);
   }
   #call:active { transform: scale(.96); }
+  #call svg { width: 30px; height: 30px; display: block; margin: 0 auto 6px; }
+  #call[data-state="connecting"] svg { display: none; }
   #call[data-state="live"] { background: var(--danger); color: #2a0808; }
   #call[data-state="connecting"] { background: #3f4652; color: var(--muted); cursor: wait; }
   #call[data-state="live"].speaking { animation: pulse 1.4s ease-out infinite; }
@@ -52,7 +70,12 @@
 <body>
   <h1>Calling Agent</h1>
   <div class="sub">Tap to start talking</div>
-  <button id="call" data-state="idle">Start call</button>
+  <button id="call" data-state="idle">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9.5" y="3" width="5" height="9"
+      rx="2.5" fill="currentColor"/><path d="M6 11a6 6 0 0 0 12 0M12 17v3.5"
+      stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+    <span>Start call</span>
+  </button>
   <div id="status"></div>
   <div id="log"></div>
 
@@ -179,7 +202,7 @@ function handleEvent(ev) {
 
 async function startCall() {
   btn.dataset.state = 'connecting';
-  btn.textContent = 'Connecting';
+  btn.querySelector('span').textContent = 'Connecting';
   setStatus('Requesting microphone…');
 
   try {
@@ -228,7 +251,7 @@ async function startCall() {
     micSource.connect(workletNode);
 
     btn.dataset.state = 'live';
-    btn.textContent = 'End call';
+    btn.querySelector('span').textContent = 'End call';
     setStatus('Listening…');
   } catch (err) {
     const msg = err.name === 'NotAllowedError'
@@ -250,7 +273,7 @@ function endCall(message = 'Call ended', isError = false) {
   partialEl = null;
 
   btn.dataset.state = 'idle';
-  btn.textContent = 'Start call';
+  btn.querySelector('span').textContent = 'Start call';
   setStatus(message, isError);
 }
 
