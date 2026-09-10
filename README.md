@@ -1,7 +1,10 @@
 # the-calling-agent
 
 A real-time voice agent you talk to in a browser. Open a link on your phone,
-tap once, and hold a spoken conversation with an AI.
+tap once, and speak to it.
+
+It currently answers the phone for a restaurant and takes table reservations:
+it checks availability, books, looks bookings up, and cancels them.
 
 Built on the [AssemblyAI Voice Agent API][vaapi], which handles speech-to-text,
 LLM routing, and text-to-speech over a single WebSocket. This repo is the thin
@@ -96,6 +99,121 @@ All settings come from the environment or `.env` — see
 To change what the agent says or add tools, edit `agent_config.py` — the
 `get_current_time` tool is there as a worked example of the JSON Schema shape
 and the `tool.call` → `tool.result` round trip.
+
+## The restaurant agent
+
+The agent answers as a host at a restaurant and takes reservations. It has five
+tools, in `src/calling_agent/restaurant.py`:
+
+| Tool | |
+|---|---|
+| `check_availability` | Is a slot free? Suggests nearby times when it is not. |
+| `book_table` | Confirms a reservation and returns a spoken reference code. |
+| `lookup_booking` | Reads a reservation back from its code. |
+| `cancel_booking` | Cancels one, returning the seats to the pool. |
+| `restaurant_info` | Hours, address, cuisine. |
+
+Configure the venue without touching code:
+
+```
+RESTAURANT_NAME=The Copper Kettle
+RESTAURANT_CUISINE=modern North Indian food
+RESTAURANT_ADDRESS=
+RESTAURANT_MAX_PARTY=12
+```
+
+Opening hours and covers per slot are in `restaurant.py` (`OPENING_HOURS`,
+`SEATS_PER_SLOT`).
+
+### Details that matter on a voice call
+
+**Today's date is baked into the prompt** rather than exposed as a tool.
+Callers say "tomorrow" and "this Friday" constantly, and a tool round-trip for
+something that static would add an audible pause to nearly every booking. The
+prompt is rebuilt per session so a long-running process never serves
+yesterday's date.
+
+**Reference codes avoid `0`, `O`, `1` and `I`**, and are returned spelled out
+(`P 8 R S F`) so the agent reads them character by character instead of running
+them together.
+
+**The agent must call `check_availability` before promising anything.** The
+prompt is explicit that confirming a booking the caller did not agree to is the
+worst failure mode here.
+
+### ⚠️ Bookings are not persisted
+
+`BOOKINGS` is an in-memory store. That is fine for trying this out and wrong
+for real use: on a serverless host each function instance has its own copy, so
+a reservation taken by one instance is invisible to the next, and a redeploy
+wipes everything.
+
+Every tool goes through `BookingStore`, so pointing it at a real database is
+the only change needed — nothing else has to move.
+
+## Choosing a voice
+
+The page has a **voice picker** under the call button; your choice is
+remembered in the browser. It only applies to the next call, since changing
+voice needs a new session.
+
+| Voice | |
+|---|---|
+| `arjun` | **Multilingual** — Hindi / Hinglish, code-switches with English. The default. |
+| `diego` | Multilingual — Latin American Spanish |
+| `james` | English — conversational US male, the most natural of the English voices |
+| `sophie` | English — clear UK female |
+| `claire` | English — US female |
+| `ivy` | English — US female. Lighter and more synthetic; the API's own example, and not a good default. |
+
+These are the ids verified to work. AssemblyAI publishes **18 English and 16
+multilingual** voices, so an id not listed here may still be valid — try it
+with `/ws?voice=<id>`, which overrides `AGENT_VOICE` for a single call. `GET
+/voices` returns the list the picker uses.
+
+Multilingual voices code-switch automatically, and the system prompt tells the
+agent to reply in whatever language it is addressed in — including mixing two
+languages mid-sentence, the way people actually speak. A multilingual voice
+paired with an English-only prompt would waste half of what you are paying for.
+
+### If it sounds robotic
+
+The voice model is only half of it. Written-sounding sentences read as
+synthetic no matter who speaks them, so `SYSTEM_PROMPT` in
+`src/calling_agent/agent_config.py` pushes for contractions, short turns,
+varied sentence length, and natural openers. Edit that before concluding a
+voice is bad.
+
+## Interrupting the agent
+
+You can cut in while it is talking and it stops immediately. Two things make
+that work:
+
+1. `interrupt_response: true` tells the API to abandon the turn it is
+   generating.
+2. On `input.speech.started` the relay tells the browser to drop every queued
+   audio buffer.
+
+There is a third part that is easy to miss. The API cannot recall bytes it has
+already put on the wire, so roughly a second of audio for the cancelled turn
+still arrives after you interrupt. Those chunks are **dropped** rather than
+played, until the next `reply.started` marks a genuinely new turn. Without
+that, the agent stops, then carries on talking over you for another second and
+a half.
+
+Set `AGENT_ALLOW_INTERRUPTIONS=false` to turn the whole behaviour off; that
+disables it both upstream and in the browser.
+
+### If it interrupts itself
+
+On a laptop or a phone speaker, the agent's own voice can reach the mic and be
+heard as you starting to talk, which cuts it off mid-sentence. `getUserMedia`
+is requested with `echoCancellation` on, which handles most of it. If it still
+happens:
+
+- Use headphones. This removes the problem entirely.
+- Raise `AGENT_VAD_THRESHOLD` toward `0.7` so quiet sound is not treated as
+  speech.
 
 ## Making it feel faster
 

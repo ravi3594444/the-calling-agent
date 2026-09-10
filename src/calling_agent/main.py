@@ -7,6 +7,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .agent_config import KNOWN_VOICES
 from .config import settings
 from .diagnostics import run_diagnostics
 from .session import AgentSession
@@ -34,6 +35,16 @@ async def healthz() -> dict:
     }
 
 
+@app.get("/voices")
+async def voices() -> dict:
+    """Voices verified to work, and the one currently configured.
+
+    AssemblyAI's full catalogue is larger than this; an id absent here may
+    still be valid. Pass any id as /ws?voice=<id> to try it without redeploying.
+    """
+    return {"current": settings.agent_voice, "known": KNOWN_VOICES}
+
+
 @app.get("/diagnose")
 async def diagnose() -> dict:
     """Walk the real call path upstream and report which step fails.
@@ -59,18 +70,25 @@ async def favicon() -> FileResponse:
 
 
 @app.websocket("/ws")
-async def ws(websocket: WebSocket, resume: str | None = None) -> None:
+async def ws(
+    websocket: WebSocket, resume: str | None = None, voice: str | None = None
+) -> None:
     """Bridge one browser to one agent session.
 
     `resume` carries a session id the client saw earlier. The client holds it
     rather than the server because on a serverless platform the instance that
     started the call is not necessarily the one handling the reconnect -- there
     is no server-side memory to look it up in.
+
+    `voice` overrides AGENT_VOICE for this call only, so voices can be compared
+    by ear without a redeploy.
     """
     await websocket.accept()
     client = websocket.client.host if websocket.client else "unknown"
     log.info("browser connected from %s%s", client, " (resuming)" if resume else "")
-    await AgentSession(BrowserTransport(websocket), resume_session_id=resume).run()
+    await AgentSession(
+        BrowserTransport(websocket), resume_session_id=resume, voice=voice
+    ).run()
     log.info("session for %s ended", client)
 
 
