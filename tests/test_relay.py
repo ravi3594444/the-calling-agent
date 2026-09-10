@@ -22,10 +22,15 @@ class MockUpstream:
         self.auth_header: str | None = None
         self._ready = threading.Event()
         self._script: list[dict] = []
+        self._reject: tuple[int, str] | None = None
         self.port: int | None = None
 
     def will_send(self, *messages: dict) -> None:
         self._script = list(messages)
+
+    def will_reject(self, code: int = 1008, reason: str = "invalid tool definition") -> None:
+        """Close the connection the way the API refuses a bad session."""
+        self._reject = (code, reason)
 
     async def _handler(self, conn) -> None:
         self.auth_header = conn.request.headers.get("Authorization")
@@ -35,6 +40,9 @@ class MockUpstream:
             # Reply to whichever opening message arrives -- a fresh session
             # sends session.update, a reconnect sends session.resume.
             if msg.get("type") in ("session.update", "session.resume"):
+                if self._reject is not None:
+                    await conn.close(code=self._reject[0], reason=self._reject[1])
+                    return
                 for out in self._script:
                     await conn.send(json.dumps(out))
 
@@ -136,7 +144,7 @@ def test_tool_call_round_trips(upstream):
         {
             "type": "tool.call",
             "name": "get_current_time",
-            "tool_call_id": "call-7",
+            "call_id": "call-7",
             "arguments": {},
         }
     )
@@ -145,19 +153,22 @@ def test_tool_call_round_trips(upstream):
 
     results = [m for m in upstream.received if m["type"] == "tool.result"]
     assert results, f"no tool.result sent; got {[m['type'] for m in upstream.received]}"
-    assert results[0]["tool_call_id"] == "call-7"
+    assert results[0]["call_id"] == "call-7"
     assert "UTC" in results[0]["result"]
+    assert results[0]["is_error"] is False
 
 
 def test_unknown_tool_reports_error_rather_than_crashing(upstream):
     upstream.will_send(
-        {"type": "tool.call", "name": "no_such_tool", "tool_call_id": "c-9", "arguments": {}}
+        {"type": "tool.call", "name": "no_such_tool", "call_id": "c-9", "arguments": {}}
     )
     with _client().websocket_connect("/ws") as ws:
         _drain(ws, "event")
 
     results = [m for m in upstream.received if m["type"] == "tool.result"]
-    assert results and "no tool named" in results[0]["result"]
+    assert results and "No tool named" in results[0]["result"]
+    # Flagged rather than disguised as a successful result.
+    assert results[0]["is_error"] is True
 
 
 def test_missing_api_key_tells_the_user(upstream, monkeypatch):
@@ -201,3 +212,80 @@ def test_session_ready_id_reaches_the_browser(upstream):
         event = _drain(ws, "event")["event"]
         assert event["type"] == "session.ready"
         assert event["session_id"] == "s-42"
+
+
+def test_session_payload_matches_the_api_schema(upstream):
+    """Locks the field names the API actually requires.
+
+    Every one of these was wrong in the first implementation and the only
+    symptom was the whole session being closed with 1008, which names no field.
+    """
+    upstream.will_send({"type": "session.ready", "session_id": "s-1"})
+    with _client().websocket_connect("/ws") as ws:
+        _drain(ws, "event")
+
+    session = upstream.received[0]["session"]
+
+    # Audio blocks carry an explicit type alongside the format.
+    assert session["input"]["type"] == "audio"
+    assert session["output"]["type"] == "audio"
+    assert session["output"]["voice"]
+
+    tool = session["tools"][0]
+    assert tool["type"] == "function"
+    assert "parameters" in tool, "the API wants 'parameters', not 'input_schema'"
+    assert "input_schema" not in tool
+    assert tool["parameters"]["type"] == "object"
+
+
+def test_rejected_session_is_explained_to_the_client(upstream):
+    """A 1008 must reach the page, not just the platform log."""
+    upstream.will_reject(1008, "unknown field 'input_schema' in tools[0]")
+    with _client().websocket_connect("/ws") as ws:
+        event = _drain(ws, "event")["event"]
+
+    assert event["type"] == "error"
+    assert event["code"] == 1008
+    # The API's own reason is the useful part; it must survive to the client.
+    assert "input_schema" in event["message"]
+    assert "configuration problem" in event["message"]
+
+
+class _FakeUpstream:
+    """Only the close attributes _report_close reads."""
+
+    def __init__(self, code, reason=""):
+        self.close_code = code
+        self.close_reason = reason
+
+
+class _RecordingTransport:
+    encoding = "audio/pcm"
+    sample_rate = 24_000
+
+    def __init__(self):
+        self.events: list[dict] = []
+
+    async def send_event(self, event: dict) -> None:
+        self.events.append(event)
+
+
+@pytest.mark.parametrize("code", [None, 1000, 1001])
+async def test_clean_close_is_not_reported_as_an_error(code):
+    """A normal hang-up, or a server going away, must not paint an error."""
+    from calling_agent.session import AgentSession
+
+    transport = _RecordingTransport()
+    await AgentSession(transport)._report_close(_FakeUpstream(code))
+    assert transport.events == []
+
+
+async def test_unexpected_close_code_is_reported():
+    from calling_agent.session import AgentSession
+
+    transport = _RecordingTransport()
+    await AgentSession(transport)._report_close(_FakeUpstream(1011, "internal error"))
+
+    assert len(transport.events) == 1
+    assert transport.events[0]["code"] == 1011
+    assert "internal error" in transport.events[0]["message"]

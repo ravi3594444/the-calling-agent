@@ -96,6 +96,9 @@ let partialEl = null;
 let sessionId = null;
 let reconnectAttempt = 0;
 let reconnectTimer = null;
+// A rejected session config fails identically on every retry, so reconnecting
+// just delays the message the user needs to see.
+let fatal = false;
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 // Serverless platforms close a WebSocket when the function hits its duration
@@ -205,6 +208,7 @@ function handleEvent(ev) {
       setStatus(`Agent error: ${ev.message || 'unknown'}`, true);
       break;
     case 'error':
+      fatal = true;
       setStatus(ev.message || 'Server error', true);
       break;
   }
@@ -241,6 +245,11 @@ function connectSocket() {
 }
 
 function scheduleReconnect() {
+  if (fatal) {
+    // The status line already carries the reason; keep it on screen.
+    endCall(statusEl.textContent, true);
+    return;
+  }
   if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
     endCall('Connection lost. Tap to start again.', true);
     return;
@@ -267,6 +276,7 @@ function scheduleReconnect() {
 /* ---------- call lifecycle ---------- */
 
 async function startCall() {
+  fatal = false;
   btn.dataset.state = 'connecting';
   btn.querySelector('span').textContent = 'Connecting';
   setStatus('Requesting microphone…');

@@ -38,6 +38,15 @@ async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+# Browsers request these regardless of the inline <link rel="icon">, and the
+# catch-all rewrite on Vercel routes them here, so without a handler every page
+# load logs two 404s.
+@app.get("/favicon.ico")
+@app.get("/favicon.png")
+async def favicon() -> FileResponse:
+    return FileResponse(STATIC_DIR / "favicon.svg", media_type="image/svg+xml")
+
+
 @app.websocket("/ws")
 async def ws(websocket: WebSocket, resume: str | None = None) -> None:
     """Bridge one browser to one agent session.

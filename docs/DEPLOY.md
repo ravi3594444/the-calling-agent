@@ -116,6 +116,7 @@ appear as live transcript below the button.
 
 | Symptom | Cause |
 |---|---|
+| Session closes immediately with `1008 (policy violation)` | The API rejected `session.update`. Its close reason names the offending field and now appears on the page itself. Usual causes: a tool missing `"type": "function"` or using `input_schema` instead of `parameters`, an `input`/`output` block missing `"type": "audio"`, or an unknown voice name. |
 | Button disabled, "Microphone needs HTTPS" | Page loaded over `http://`. Use the `https://` URL. |
 | Permission prompt never appears | Not a secure origin, or previously denied — clear the site's permissions and retry. |
 | "AssemblyAI rejected the connection (401)" | Bad or empty `ASSEMBLYAI_API_KEY`. Check `curl localhost:8080/healthz`. |
