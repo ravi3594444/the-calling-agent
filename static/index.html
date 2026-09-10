@@ -53,6 +53,17 @@
   }
   #status { margin-top: 20px; font-size: 13px; color: var(--muted); min-height: 20px; text-align: center; }
   #status.error { color: var(--danger); }
+  #voice-row {
+    display: flex; align-items: center; gap: 10px; margin-top: 22px;
+    font-size: 13px; color: var(--muted);
+  }
+  /* Changing voice mid-call would need a new session, so lock it while live. */
+  body:has(#call[data-state="live"]) #voice-row,
+  body:has(#call[data-state="connecting"]) #voice-row { opacity: .35; pointer-events: none; }
+  #voice {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 10px; font: inherit; max-width: 260px;
+  }
   #log {
     width: 100%; max-width: 560px; margin-top: 26px; padding: 14px;
     background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
@@ -77,12 +88,17 @@
     <span>Start call</span>
   </button>
   <div id="status"></div>
+  <label id="voice-row" for="voice">
+    <span>Voice</span>
+    <select id="voice"></select>
+  </label>
   <div id="log"></div>
 
 <script type="module">
 const SAMPLE_RATE = 24000;
 
 const btn = document.getElementById('call');
+const voiceEl = document.getElementById('voice');
 const statusEl = document.getElementById('status');
 const logEl = document.getElementById('log');
 
@@ -213,6 +229,10 @@ function handleEvent(ev) {
       fatal = true;
       setStatus(ev.message || 'Server error', true);
       break;
+    case 'notice':
+      // Something optional was rejected but the call is up; not an error.
+      setStatus(ev.message || '');
+      break;
   }
 }
 
@@ -220,10 +240,13 @@ function handleEvent(ev) {
 
 function connectSocket() {
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  const params = new URLSearchParams();
   // Resuming is the client's job: on a serverless platform the instance that
   // started the call is not the one handling the reconnect, so there is no
   // server-side memory to look the session up in.
-  const query = sessionId ? `?resume=${encodeURIComponent(sessionId)}` : '';
+  if (sessionId) params.set('resume', sessionId);
+  else if (voiceEl.value) params.set('voice', voiceEl.value);
+  const query = params.toString() ? `?${params}` : '';
   const socket = new WebSocket(`${scheme}://${location.host}/ws${query}`);
   ws = socket;
 
@@ -350,6 +373,41 @@ btn.addEventListener('click', () => {
   if (btn.dataset.state === 'idle') startCall();
   else if (btn.dataset.state === 'live') endCall();
 });
+
+async function loadVoices() {
+  try {
+    const { current, known } = await (await fetch('/voices')).json();
+    let saved = null;
+    try { saved = localStorage.getItem('voice'); } catch { /* private mode */ }
+    const chosen = saved || current;
+
+    voiceEl.innerHTML = '';
+    for (const [id, description] of Object.entries(known)) {
+      const opt = document.createElement('option');
+      opt.value = id;
+      opt.textContent = `${id} — ${description}`;
+      if (id === chosen) opt.selected = true;
+      voiceEl.appendChild(opt);
+    }
+    // Keep a configured voice selectable even when it is not in the list.
+    if (!(chosen in known)) {
+      const opt = document.createElement('option');
+      opt.value = chosen;
+      opt.textContent = chosen;
+      opt.selected = true;
+      voiceEl.prepend(opt);
+    }
+  } catch {
+    document.getElementById('voice-row').hidden = true;
+  }
+}
+
+voiceEl.addEventListener('change', () => {
+  try { localStorage.setItem('voice', voiceEl.value); } catch { /* ignore */ }
+  setStatus(`Voice set to ${voiceEl.value}. Start a call to hear it.`);
+});
+
+loadVoices();
 
 if (!navigator.mediaDevices?.getUserMedia) {
   // getUserMedia is unavailable on insecure origins, which is the usual cause.

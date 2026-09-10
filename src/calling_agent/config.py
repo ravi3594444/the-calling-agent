@@ -14,9 +14,12 @@ class Settings(BaseSettings):
         default="wss://agents.assemblyai.com/v1/ws", alias="ASSEMBLYAI_AGENT_WS_URL"
     )
 
-    agent_voice: str = Field(default="ivy", alias="AGENT_VOICE")
+    # "arjun" is a multilingual Hindi/Hinglish voice that code-switches with
+    # English automatically -- the right default for Indian callers. "ivy",
+    # the API's own example, is lighter and reads as more synthetic.
+    agent_voice: str = Field(default="arjun", alias="AGENT_VOICE")
     agent_greeting: str = Field(
-        default="Hi! I'm your calling agent. What can I help you with?",
+        default="Thanks for calling The Copper Kettle, this is Meera. How can I help?",
         alias="AGENT_GREETING",
     )
     # Optional stored-agent binding. Mutually exclusive with inline config.
@@ -31,6 +34,14 @@ class Settings(BaseSettings):
     min_silence_ms: int = Field(default=320, alias="AGENT_MIN_SILENCE_MS")
     max_silence_ms: int = Field(default=1500, alias="AGENT_MAX_SILENCE_MS")
     allow_interruptions: bool = Field(default=True, alias="AGENT_ALLOW_INTERRUPTIONS")
+
+    # --- Restaurant ---
+    restaurant_name: str = Field(default="The Copper Kettle", alias="RESTAURANT_NAME")
+    restaurant_cuisine: str = Field(
+        default="modern North Indian food", alias="RESTAURANT_CUISINE"
+    )
+    restaurant_address: str = Field(default="", alias="RESTAURANT_ADDRESS")
+    max_party_size: int = Field(default=12, alias="RESTAURANT_MAX_PARTY")
 
     host: str = Field(default="0.0.0.0", alias="HOST")
     port: int = Field(default=8080, alias="PORT")
