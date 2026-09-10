@@ -112,6 +112,10 @@ tools, in `src/calling_agent/restaurant.py`:
 | `lookup_booking` | Reads a reservation back from its code. |
 | `cancel_booking` | Cancels one, returning the seats to the pool. |
 | `restaurant_info` | Hours, address, cuisine. |
+| `get_menu` | Dishes in one section. |
+| `find_dishes` | Search by diet, allergen, price or spice level. |
+| `dish_details` | Price, description, spice, allergens for one dish. |
+| `recommend_dishes` | Popular picks, optionally filtered by diet. |
 
 Configure the venue without touching code:
 
@@ -125,6 +129,24 @@ RESTAURANT_MAX_PARTY=12
 Opening hours and covers per slot are in `restaurant.py` (`OPENING_HOURS`,
 `SEATS_PER_SLOT`).
 
+### The menu
+
+Placeholder data in `src/calling_agent/menu.py` — a North Indian card with
+prices in rupees, spice levels, dietary flags and allergens. Replace `MENU`
+with real dishes; nothing else needs to change.
+
+Every menu answer is written to be **spoken**. A tool that returned the whole
+card would have the agent read forty dishes at a caller, so each one names at
+most four and offers the rest: *"In mains we have Butter Chicken, 480 rupees
+... There are three more if they want to hear them."* Small numbers are spelled
+out, and `_join` produces "a, b and c" rather than a bracketed list.
+
+Allergen filtering is treated as safety-critical: the agent is told to search
+with the allergen excluded rather than reason about it, and tests assert the
+data cannot contradict itself — no vegan dish carries dairy, no gluten-free
+dish carries gluten, and every vegan dish is also marked vegetarian so a
+vegetarian search cannot silently hide it.
+
 ### Details that matter on a voice call
 
 **Today's date is baked into the prompt** rather than exposed as a tool.
@@ -132,6 +154,14 @@ Callers say "tomorrow" and "this Friday" constantly, and a tool round-trip for
 something that static would add an audible pause to nearly every booking. The
 prompt is rebuilt per session so a long-running process never serves
 yesterday's date.
+
+**Tool results are held until `reply.done`.** The API expects `tool.result` on
+the next `reply.done`; sent while the agent is mid-sentence it is not acted on,
+and the symptom is nasty — the agent says "let me check", goes silent, and only
+answers once the caller prompts it again. Results are queued and released on
+`reply.done`, sent immediately when no reply is in progress, and flushed after
+a two-second timeout if `reply.done` never arrives. The prompt reinforces it:
+look things up and answer in the same turn, never announce a lookup and stop.
 
 **Reference codes avoid `0`, `O`, `1` and `I`**, and are returned spelled out
 (`P 8 R S F`) so the agent reads them character by character instead of running
@@ -166,10 +196,16 @@ voice needs a new session.
 | `claire` | English — US female |
 | `ivy` | English — US female. Lighter and more synthetic; the API's own example, and not a good default. |
 
-These are the ids verified to work. AssemblyAI publishes **18 English and 16
-multilingual** voices, so an id not listed here may still be valid — try it
-with `/ws?voice=<id>`, which overrides `AGENT_VOICE` for a single call. `GET
-/voices` returns the list the picker uses.
+These are the ids that appear in AssemblyAI's own docs and example code.
+They publish **18 English and 16 multilingual** voices and keep adding to the
+catalogue, so an id not listed here may well be valid — try it with
+`/ws?voice=<id>`, which overrides `AGENT_VOICE` for a single call.
+
+**A refused voice no longer kills the call.** A bad voice id is rejected with
+`1008`, which would otherwise take down the whole session. The relay now walks
+a fallback chain — full payload, then without turn-detection tuning, then with
+the vendor's own default voice — and tells you on the page which part had to be
+dropped. So an unavailable voice costs you the voice, not the conversation.
 
 Multilingual voices code-switch automatically, and the system prompt tells the
 agent to reply in whatever language it is addressed in — including mixing two

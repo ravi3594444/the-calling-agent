@@ -16,6 +16,8 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from .config import settings
+from .menu import IMPLEMENTATIONS as MENU_IMPLEMENTATIONS
+from .menu import TOOLS as MENU_TOOLS
 
 # --- House rules -------------------------------------------------------------
 
@@ -320,10 +322,13 @@ TOOLS: list[dict[str, Any]] = [
     },
 ]
 
+TOOLS += MENU_TOOLS
+
 IMPLEMENTATIONS = {
     "check_availability": check_availability,
     "book_table": book_table,
     "lookup_booking": lookup_booking,
     "cancel_booking": cancel_booking,
     "restaurant_info": restaurant_info,
+    **MENU_IMPLEMENTATIONS,
 }

@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     # the API's own example, is lighter and reads as more synthetic.
     agent_voice: str = Field(default="arjun", alias="AGENT_VOICE")
     agent_greeting: str = Field(
-        default="Thanks for calling! Would you like to book a table?",
+        default="Thanks for calling The Copper Kettle, this is Meera. How can I help?",
         alias="AGENT_GREETING",
     )
     # Optional stored-agent binding. Mutually exclusive with inline config.

@@ -229,6 +229,10 @@ function handleEvent(ev) {
       fatal = true;
       setStatus(ev.message || 'Server error', true);
       break;
+    case 'notice':
+      // Something optional was rejected but the call is up; not an error.
+      setStatus(ev.message || '');
+      break;
   }
 }
 

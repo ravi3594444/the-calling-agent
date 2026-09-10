@@ -23,7 +23,7 @@ class MockUpstream:
         self._ready = threading.Event()
         self._script: list[dict] = []
         self._reject: tuple[int, str] | None = None
-        self._reject_once = False
+        self._reject_remaining = 0
         self.port: int | None = None
 
     def will_send(self, *messages: dict) -> None:
@@ -35,8 +35,12 @@ class MockUpstream:
 
     def will_reject_once(self, code: int = 1008, reason: str = "unknown field") -> None:
         """Refuse the first session only, then behave normally."""
+        self.will_reject_n(1, code, reason)
+
+    def will_reject_n(self, times: int, code: int = 1008, reason: str = "unknown field") -> None:
+        """Refuse the first `times` sessions, then behave normally."""
         self._reject = (code, reason)
-        self._reject_once = True
+        self._reject_remaining = times
 
     async def _handler(self, conn) -> None:
         self.auth_header = conn.request.headers.get("Authorization")
@@ -48,8 +52,10 @@ class MockUpstream:
             if msg.get("type") in ("session.update", "session.resume"):
                 if self._reject is not None:
                     code, reason = self._reject
-                    if self._reject_once:
-                        self._reject = None
+                    if self._reject_remaining:
+                        self._reject_remaining -= 1
+                        if not self._reject_remaining:
+                            self._reject = None
                     await conn.close(code=code, reason=reason)
                     return
                 for out in self._script:
@@ -338,8 +344,11 @@ def test_refused_turn_detection_retries_without_it(upstream):
     upstream.will_send({"type": "session.ready", "session_id": "s-retry"})
 
     with _client().websocket_connect("/ws") as ws:
-        event = _drain(ws, "event")["event"]
-        assert event["type"] == "session.ready"
+        # The notice about what was dropped arrives first, then the session.
+        notice = _drain(ws, "event")["event"]
+        assert notice["type"] == "notice"
+        assert "turn detection" in notice["message"]
+        assert _drain(ws, "event")["event"]["type"] == "session.ready"
 
     opens = [m for m in upstream.received if m["type"] == "session.update"]
     assert len(opens) == 2, "expected one refused attempt then one retry"
@@ -450,3 +459,111 @@ def test_disabling_interruptions_also_stops_cutting_playback(upstream, monkeypat
                 break
         else:
             raise AssertionError("audio never arrived")
+
+
+def test_refused_voice_falls_back_instead_of_dropping_the_call(upstream, monkeypatch):
+    """An unavailable voice id must cost the voice, not the conversation."""
+    from calling_agent.agent_config import FALLBACK_VOICE
+
+    # Refuse the first two attempts: full payload, then without turn detection.
+    upstream.will_reject_n(2, 1008, "unknown voice 'sophie'")
+    upstream.will_send({"type": "session.ready", "session_id": "s-fb"})
+
+    with _client().websocket_connect("/ws?voice=sophie") as ws:
+        seen = [_drain(ws, "event")["event"] for _ in range(2)]
+
+    opens = [m for m in upstream.received if m["type"] == "session.update"]
+    assert len(opens) == 3, f"expected three attempts, got {len(opens)}"
+    assert opens[0]["session"]["output"]["voice"] == "sophie"
+    assert opens[-1]["session"]["output"]["voice"] == FALLBACK_VOICE
+
+    # The caller is told what was lost rather than left guessing.
+    notices = [e for e in seen if e.get("type") == "notice"]
+    assert notices and "sophie" in notices[0]["message"]
+
+
+def test_fallback_is_not_attempted_when_already_on_the_fallback_voice(upstream):
+    """No point retrying the same voice that was just refused."""
+    from calling_agent.agent_config import FALLBACK_VOICE
+
+    upstream.will_reject(1008, "nope")
+    with _client().websocket_connect(f"/ws?voice={FALLBACK_VOICE}") as ws:
+        _drain(ws, "event")
+
+    opens = [m for m in upstream.received if m["type"] == "session.update"]
+    assert len(opens) == 2, "should try full then without turn detection, and stop"
+
+
+def test_tool_result_waits_for_reply_done(upstream):
+    """The API expects tool.result on the next reply.done.
+
+    Sent mid-reply it is not acted on, so the agent says "let me check" and
+    then goes quiet until the caller prompts it again.
+    """
+    upstream.will_send(
+        {"type": "reply.started"},
+        {"type": "tool.call", "name": "restaurant_info", "call_id": "c-1", "arguments": {}},
+    )
+
+    with _client().websocket_connect("/ws") as ws:
+        _drain(ws, "event")  # let the exchange happen
+        # Nothing should have been sent while the reply was still in progress.
+        assert not [m for m in upstream.received if m["type"] == "tool.result"]
+
+
+def test_reply_done_releases_the_queued_result(upstream):
+    upstream.will_send(
+        {"type": "reply.started"},
+        {"type": "tool.call", "name": "restaurant_info", "call_id": "c-1", "arguments": {}},
+        {"type": "reply.done", "status": "completed"},
+    )
+
+    with _client().websocket_connect("/ws") as ws:
+        for _ in range(12):
+            msg = ws.receive_json()
+            if msg.get("event", {}).get("type") == "reply.done":
+                break
+
+    results = [m for m in upstream.received if m["type"] == "tool.result"]
+    assert results, "reply.done did not release the tool result"
+    assert results[0]["call_id"] == "c-1"
+
+
+def test_tool_result_is_sent_at_once_when_no_reply_is_in_progress(upstream):
+    """With nothing to wait for, holding the result would stall the call."""
+    upstream.will_send(
+        {"type": "tool.call", "name": "restaurant_info", "call_id": "c-2", "arguments": {}}
+    )
+
+    with _client().websocket_connect("/ws") as ws:
+        _drain(ws, "event")
+
+    results = [m for m in upstream.received if m["type"] == "tool.result"]
+    assert results and results[0]["call_id"] == "c-2"
+
+
+async def test_queued_results_are_flushed_if_reply_done_never_arrives(monkeypatch):
+    """A missing reply.done must not leave the agent waiting forever."""
+    import json as _json
+
+    from calling_agent import session as session_mod
+
+    monkeypatch.setattr(session_mod, "TOOL_RESULT_TIMEOUT", 0.05)
+
+    sent: list[dict] = []
+
+    class FakeUpstream:
+        async def send(self, raw):
+            sent.append(_json.loads(raw))
+
+    transport = _RecordingTransport()
+    agent = session_mod.AgentSession(transport)
+    agent._reply_active = True  # a reply that never completes
+    await agent._handle_tool_call(
+        FakeUpstream(),
+        {"type": "tool.call", "name": "restaurant_info", "call_id": "c-3", "arguments": {}},
+    )
+
+    assert not sent, "should be queued while the reply is active"
+    await asyncio.sleep(0.2)
+    assert sent and sent[0]["call_id"] == "c-3", "timeout did not flush the result"

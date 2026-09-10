@@ -13,11 +13,19 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from . import protocol as p
-from .agent_config import build_session_resume, build_session_update, run_tool
+from .agent_config import (
+    FALLBACK_VOICE,
+    build_session_resume,
+    build_session_update,
+    run_tool,
+)
 from .config import settings
 from .transport.base import AudioTransport
 
 log = logging.getLogger(__name__)
+
+# How long to wait for reply.done before sending queued tool results anyway.
+TOOL_RESULT_TIMEOUT = 2.0
 
 
 class AgentSession:
@@ -37,6 +45,17 @@ class AgentSession:
         # played -- otherwise the agent talks over the caller for the second or
         # so of audio still in transit.
         self._suppress_audio = False
+        # Set when an attempt drops something optional. Delivered on
+        # session.ready rather than after the attempt returns, because an
+        # attempt does not return until the whole call is over.
+        self._pending_notice: str | None = None
+        # Tool results wait here until the agent's current reply finishes.
+        # The API expects tool.result on the next reply.done; sent mid-reply it
+        # is not acted on, so the agent says "let me check" and then goes quiet
+        # until the caller prompts it again.
+        self._pending_tool_results: list[dict] = []
+        self._reply_active = False
+        self._flush_guard: asyncio.Task | None = None
 
     async def run(self) -> None:
         """Open the upstream connection and pump audio until either side ends."""
@@ -47,13 +66,34 @@ class AgentSession:
             return
 
         try:
-            refused = await self._attempt(tune_turns=True, report_close=False)
-            if refused:
-                # Turn detection is the newest part of the payload and a single
-                # unknown field there is refused with 1008, which would
-                # otherwise take down the whole call rather than one setting.
-                log.warning("session refused with turn detection; retrying without it")
-                await self._attempt(tune_turns=False, report_close=True)
+            # Progressively simpler payloads. A 1008 refusal names one bad
+            # field but kills the whole session, so rather than lose the call
+            # we drop the optional parts in order of how likely they are to be
+            # the problem. Each entry is (tune_turns, voice, what_was_dropped).
+            plan: list[tuple[bool, str | None, str | None]] = [
+                (True, self._voice, None),
+                (False, self._voice, "turn detection tuning"),
+            ]
+            requested = self._voice or settings.agent_voice
+            if requested != FALLBACK_VOICE:
+                # An unavailable voice id is the other common refusal, and the
+                # vendor's own documented default is the safest thing to land on.
+                plan.append((False, FALLBACK_VOICE, f"the '{requested}' voice"))
+
+            for index, (tune_turns, voice, dropped) in enumerate(plan):
+                last = index == len(plan) - 1
+                if dropped:
+                    log.warning("session refused; retrying without %s", dropped)
+                self._pending_notice = (
+                    f"Connected, but {dropped} was rejected and had to be dropped."
+                    if dropped
+                    else None
+                )
+                refused = await self._attempt(
+                    tune_turns=tune_turns, voice=voice, report_close=last
+                )
+                if not refused or last:
+                    return
         except websockets.InvalidStatus as exc:
             # 401 = bad key. 404 = wrong path; docs list /v1/ws but the Twilio
             # example uses /v1/realtime, so surface the URL we actually tried.
@@ -76,7 +116,9 @@ class AgentSession:
         finally:
             await self._transport.close()
 
-    async def _attempt(self, *, tune_turns: bool, report_close: bool) -> bool:
+    async def _attempt(
+        self, *, tune_turns: bool, report_close: bool, voice: str | None = None
+    ) -> bool:
         """Open one upstream session and pump it until it ends.
 
         Returns True if the session was refused before it ever became ready,
@@ -93,7 +135,7 @@ class AgentSession:
                 log.info("resuming session %s", self._resume_session_id)
             else:
                 opening = build_session_update(
-                    self._transport.encoding, tune_turns=tune_turns, voice=self._voice
+                    self._transport.encoding, tune_turns=tune_turns, voice=voice
                 )
             await upstream.send(json.dumps(opening))
             log.info(
@@ -104,8 +146,12 @@ class AgentSession:
             )
             await self._pump(upstream, report_close=report_close)
 
-            refusable = tune_turns and not self._resume_session_id
-            return refusable and not self._ready and upstream.close_code == 1008
+            # Whether this attempt was refused, not whether it is worth
+            # retrying -- that decision belongs to the caller's plan. Tying it
+            # to tune_turns here made every later attempt look like a success.
+            if self._resume_session_id:
+                return False
+            return not self._ready and upstream.close_code == 1008
 
     async def _pump(self, upstream: ClientConnection, *, report_close: bool = True) -> None:
         """Run both directions concurrently; stop as soon as either finishes."""
@@ -188,11 +234,21 @@ class AgentSession:
         elif kind == p.REPLY_STARTED:
             # A genuinely new turn; audio is wanted again.
             self._suppress_audio = False
+            self._reply_active = True
+
+        elif kind == p.REPLY_DONE:
+            self._reply_active = False
+            await self._flush_tool_results(upstream)
 
         elif kind == p.SESSION_READY:
             self._ready = True
             self._session_id = msg.get("session_id")
             log.info("session ready: %s", self._session_id)
+            if self._pending_notice:
+                await self._transport.send_event(
+                    {"type": "notice", "message": self._pending_notice}
+                )
+                self._pending_notice = None
 
         elif kind == p.TOOL_CALL:
             await self._handle_tool_call(upstream, msg)
@@ -213,15 +269,42 @@ class AgentSession:
         args = msg.get("arguments") or {}
         result, is_error = await asyncio.to_thread(run_tool, name, args)
         log.info("tool %s -> %s%s", name, result, " (error)" if is_error else "")
-        await upstream.send(
-            json.dumps(
-                {
-                    "type": p.TOOL_RESULT,
-                    # The API pairs results by call_id; a wrong key leaves the
-                    # agent waiting on a tool that already ran.
-                    "call_id": msg.get("call_id"),
-                    "result": result,
-                    "is_error": is_error,
-                }
-            )
+
+        self._pending_tool_results.append(
+            {
+                "type": p.TOOL_RESULT,
+                # The API pairs results by call_id; a wrong key leaves the
+                # agent waiting on a tool that already ran.
+                "call_id": msg.get("call_id"),
+                "result": result,
+                "is_error": is_error,
+            }
         )
+
+        if not self._reply_active:
+            # No reply in progress to wait for -- send straight away, or the
+            # result would sit here until some later turn happened to flush it.
+            await self._flush_tool_results(upstream)
+            return
+
+        # Safety net: if reply.done never arrives the agent would wait forever
+        # on a tool that has already run.
+        if self._flush_guard is None or self._flush_guard.done():
+            self._flush_guard = asyncio.create_task(self._flush_after_timeout(upstream))
+
+    async def _flush_after_timeout(self, upstream: ClientConnection) -> None:
+        await asyncio.sleep(TOOL_RESULT_TIMEOUT)
+        if self._pending_tool_results:
+            log.warning("no reply.done within %ss; sending tool results anyway",
+                        TOOL_RESULT_TIMEOUT)
+            await self._flush_tool_results(upstream)
+
+    async def _flush_tool_results(self, upstream: ClientConnection) -> None:
+        if not self._pending_tool_results:
+            return
+        queued, self._pending_tool_results = self._pending_tool_results, []
+        if self._flush_guard is not None and not self._flush_guard.done():
+            self._flush_guard.cancel()
+        for payload in queued:
+            await upstream.send(json.dumps(payload))
+        log.info("sent %d tool result(s)", len(queued))
