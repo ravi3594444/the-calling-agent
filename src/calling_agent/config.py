@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     # Optional stored-agent binding. Mutually exclusive with inline config.
     agent_id: str = Field(default="", alias="AGENT_ID")
 
+    # --- Turn detection: the main lever on perceived response speed ---
+    # min_silence is how long the caller must stop talking before the agent
+    # decides they are done. Lowering it makes replies feel faster but risks
+    # cutting people off mid-sentence.
+    turn_detection: bool = Field(default=True, alias="AGENT_TURN_DETECTION")
+    vad_threshold: float = Field(default=0.5, alias="AGENT_VAD_THRESHOLD")
+    min_silence_ms: int = Field(default=320, alias="AGENT_MIN_SILENCE_MS")
+    max_silence_ms: int = Field(default=1500, alias="AGENT_MAX_SILENCE_MS")
+    allow_interruptions: bool = Field(default=True, alias="AGENT_ALLOW_INTERRUPTIONS")
+
     host: str = Field(default="0.0.0.0", alias="HOST")
     port: int = Field(default=8080, alias="PORT")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")

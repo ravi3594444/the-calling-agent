@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
+from .diagnostics import run_diagnostics
 from .session import AgentSession
 from .transport import BrowserTransport
 
@@ -31,6 +32,16 @@ async def healthz() -> dict:
         "api_key_configured": bool(settings.assemblyai_api_key),
         "upstream": settings.assemblyai_agent_ws_url,
     }
+
+
+@app.get("/diagnose")
+async def diagnose() -> dict:
+    """Walk the real call path upstream and report which step fails.
+
+    Read-only apart from opening one short agent session, which is billable
+    but brief. Open this in a browser when the page will not talk.
+    """
+    return await run_diagnostics()
 
 
 @app.get("/")

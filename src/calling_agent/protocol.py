@@ -23,6 +23,13 @@ REPLY_DONE = "reply.done"                      # status == "interrupted" on barg
 TOOL_CALL = "tool.call"
 SESSION_ERROR = "session.error"
 
+# ---- Audio payload field names ----
+# These are NOT symmetric, which is easy to get wrong and fails silently:
+# audio still reaches the agent, the agent still replies, and the reply is
+# simply dropped -- so it hears you, answers, and you never hear it.
+INPUT_AUDIO_FIELD = "audio"   # client -> server, on input.audio
+REPLY_AUDIO_FIELD = "data"    # server -> client, on reply.audio
+
 # ---- Audio encodings ----
 # Browser / WebRTC path: 16-bit signed little-endian PCM, 24 kHz, mono.
 ENCODING_PCM = "audio/pcm"

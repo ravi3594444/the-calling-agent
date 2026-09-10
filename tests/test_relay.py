@@ -23,6 +23,7 @@ class MockUpstream:
         self._ready = threading.Event()
         self._script: list[dict] = []
         self._reject: tuple[int, str] | None = None
+        self._reject_once = False
         self.port: int | None = None
 
     def will_send(self, *messages: dict) -> None:
@@ -31,6 +32,11 @@ class MockUpstream:
     def will_reject(self, code: int = 1008, reason: str = "invalid tool definition") -> None:
         """Close the connection the way the API refuses a bad session."""
         self._reject = (code, reason)
+
+    def will_reject_once(self, code: int = 1008, reason: str = "unknown field") -> None:
+        """Refuse the first session only, then behave normally."""
+        self._reject = (code, reason)
+        self._reject_once = True
 
     async def _handler(self, conn) -> None:
         self.auth_header = conn.request.headers.get("Authorization")
@@ -41,7 +47,10 @@ class MockUpstream:
             # sends session.update, a reconnect sends session.resume.
             if msg.get("type") in ("session.update", "session.resume"):
                 if self._reject is not None:
-                    await conn.close(code=self._reject[0], reason=self._reject[1])
+                    code, reason = self._reject
+                    if self._reject_once:
+                        self._reject = None
+                    await conn.close(code=code, reason=reason)
                     return
                 for out in self._script:
                     await conn.send(json.dumps(out))
@@ -121,7 +130,7 @@ def test_sends_session_config_with_bearer_auth(upstream):
 
 def test_forwards_audio_in_both_directions(upstream):
     reply = base64.b64encode(b"\x01\x02" * 32).decode()
-    upstream.will_send({"type": "reply.audio", "audio": reply})
+    upstream.will_send({"type": "reply.audio", "data": reply})
 
     mic = base64.b64encode(b"\x10\x20" * 32).decode()
     with _client().websocket_connect("/ws") as ws:
@@ -289,3 +298,64 @@ async def test_unexpected_close_code_is_reported():
     assert len(transport.events) == 1
     assert transport.events[0]["code"] == 1011
     assert "internal error" in transport.events[0]["message"]
+
+
+def test_reply_audio_is_read_from_the_data_field(upstream):
+    """The API's audio field names are asymmetric.
+
+    input.audio carries "audio" but reply.audio carries "data". Reading the
+    wrong key fails silently: speech reaches the agent, the agent replies, and
+    the reply is dropped -- so it hears you, answers, and you hear nothing.
+    """
+    speech = base64.b64encode(b"\x05\x06" * 40).decode()
+    upstream.will_send({"type": "reply.audio", "data": speech})
+
+    with _client().websocket_connect("/ws") as ws:
+        assert _drain(ws, "audio")["data"] == speech
+
+
+def test_input_audio_is_sent_on_the_audio_field(upstream):
+    mic = base64.b64encode(b"\x07\x08" * 40).decode()
+    upstream.will_send({"type": "session.ready", "session_id": "s-1"})
+
+    with _client().websocket_connect("/ws") as ws:
+        ws.send_json({"type": "audio", "data": mic})
+        _drain(ws, "event")
+
+    sent = [m for m in upstream.received if m["type"] == "input.audio"]
+    assert sent and sent[0]["audio"] == mic
+    assert "data" not in sent[0]
+
+
+def test_refused_turn_detection_retries_without_it(upstream):
+    """One unknown field must not take down the whole call.
+
+    turn_detection is the newest part of the payload. If it is refused, the
+    session should reopen without it rather than leaving the caller with
+    silence.
+    """
+    upstream.will_reject_once(1008, "unknown field 'vad_threshold'")
+    upstream.will_send({"type": "session.ready", "session_id": "s-retry"})
+
+    with _client().websocket_connect("/ws") as ws:
+        event = _drain(ws, "event")["event"]
+        assert event["type"] == "session.ready"
+
+    opens = [m for m in upstream.received if m["type"] == "session.update"]
+    assert len(opens) == 2, "expected one refused attempt then one retry"
+    assert "turn_detection" in opens[0]["session"]["input"]
+    assert "turn_detection" not in opens[1]["session"]["input"]
+    # The retry keeps everything that was not implicated.
+    assert opens[1]["session"]["output"]["voice"]
+    assert opens[1]["session"]["tools"]
+
+
+def test_turn_detection_carries_the_latency_settings(upstream):
+    upstream.will_send({"type": "session.ready", "session_id": "s-1"})
+    with _client().websocket_connect("/ws") as ws:
+        _drain(ws, "event")
+
+    td = upstream.received[0]["session"]["input"]["turn_detection"]
+    assert set(td) == {"vad_threshold", "min_silence", "max_silence", "interrupt_response"}
+    # Lower min_silence is what makes replies feel fast.
+    assert td["min_silence"] < td["max_silence"]

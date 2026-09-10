@@ -97,6 +97,30 @@ To change what the agent says or add tools, edit `agent_config.py` — the
 `get_current_time` tool is there as a worked example of the JSON Schema shape
 and the `tool.call` → `tool.result` round trip.
 
+## Making it feel faster
+
+Most of the delay is upstream: AssemblyAI advertises **~1 s end-to-end** for
+speech in to speech out, and the relay here adds well under a millisecond. So
+tuning is mostly about not waiting longer than necessary to decide you have
+stopped talking.
+
+| Setting | Effect |
+|---|---|
+| `AGENT_MIN_SILENCE_MS` (default 320) | Silence before the agent decides your turn ended. **The main lever.** Lower feels snappier; too low clips you mid-sentence. |
+| `AGENT_MAX_SILENCE_MS` (default 1500) | Hard cap before the turn is forced to end. |
+| `AGENT_VAD_THRESHOLD` (default 0.5) | Raise in a noisy room so background noise is not heard as speech. |
+
+If replies start cutting you off, raise `AGENT_MIN_SILENCE_MS` to 500-700. If
+the agent feels sluggish, lower it toward 250.
+
+The client also keeps its playback cushion at 20 ms — enough to absorb jitter
+without adding audible delay. Raise it in `static/index.html` only if playback
+stutters.
+
+Because `turn_detection` is the newest part of the API payload, a rejected
+field there would otherwise kill the whole session. The relay retries once
+without it, so a bad setting costs you the tuning rather than the call.
+
 ## Cost
 
 The Voice Agent API bills **$4.50/hr** of connected time, roughly **$0.075 per

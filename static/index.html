@@ -160,7 +160,9 @@ function playChunk(b64) {
   // Schedule back-to-back. If we have fallen behind (network hiccup), restart
   // the cursor at now, with a small cushion to absorb jitter.
   const now = ctx.currentTime;
-  if (nextPlayAt < now) nextPlayAt = now + 0.04;
+  // Cushion absorbs network jitter but is added latency on every reply, so
+  // keep it small; raise it if playback stutters on a poor connection.
+  if (nextPlayAt < now) nextPlayAt = now + 0.02;
   src.start(nextPlayAt);
   nextPlayAt += buffer.duration;
 
