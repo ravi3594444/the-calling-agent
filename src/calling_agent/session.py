@@ -25,6 +25,7 @@ class AgentSession:
         self._transport = transport
         self._resume_session_id = resume_session_id
         self._session_id: str | None = None
+        self._ready = False
 
     async def run(self) -> None:
         """Open the upstream connection and pump audio until either side ends."""
@@ -35,25 +36,13 @@ class AgentSession:
             return
 
         try:
-            async with websockets.connect(
-                settings.assemblyai_agent_ws_url,
-                additional_headers={
-                    "Authorization": f"Bearer {settings.assemblyai_api_key}"
-                },
-                max_size=None,
-            ) as upstream:
-                if self._resume_session_id:
-                    opening = build_session_resume(self._resume_session_id)
-                    log.info("resuming session %s", self._resume_session_id)
-                else:
-                    opening = build_session_update(self._transport.encoding)
-                await upstream.send(json.dumps(opening))
-                log.info(
-                    "upstream connected (encoding=%s, %d Hz)",
-                    self._transport.encoding,
-                    self._transport.sample_rate,
-                )
-                await self._pump(upstream)
+            refused = await self._attempt(tune_turns=True, report_close=False)
+            if refused:
+                # Turn detection is the newest part of the payload and a single
+                # unknown field there is refused with 1008, which would
+                # otherwise take down the whole call rather than one setting.
+                log.warning("session refused with turn detection; retrying without it")
+                await self._attempt(tune_turns=False, report_close=True)
         except websockets.InvalidStatus as exc:
             # 401 = bad key. 404 = wrong path; docs list /v1/ws but the Twilio
             # example uses /v1/realtime, so surface the URL we actually tried.
@@ -76,7 +65,36 @@ class AgentSession:
         finally:
             await self._transport.close()
 
-    async def _pump(self, upstream: ClientConnection) -> None:
+    async def _attempt(self, *, tune_turns: bool, report_close: bool) -> bool:
+        """Open one upstream session and pump it until it ends.
+
+        Returns True if the session was refused before it ever became ready,
+        which is the only case worth retrying with a smaller payload.
+        """
+        self._ready = False
+        async with websockets.connect(
+            settings.assemblyai_agent_ws_url,
+            additional_headers={"Authorization": f"Bearer {settings.assemblyai_api_key}"},
+            max_size=None,
+        ) as upstream:
+            if self._resume_session_id:
+                opening = build_session_resume(self._resume_session_id)
+                log.info("resuming session %s", self._resume_session_id)
+            else:
+                opening = build_session_update(self._transport.encoding, tune_turns=tune_turns)
+            await upstream.send(json.dumps(opening))
+            log.info(
+                "upstream connected (encoding=%s, %d Hz, turn_tuning=%s)",
+                self._transport.encoding,
+                self._transport.sample_rate,
+                tune_turns,
+            )
+            await self._pump(upstream, report_close=report_close)
+
+            refusable = tune_turns and not self._resume_session_id
+            return refusable and not self._ready and upstream.close_code == 1008
+
+    async def _pump(self, upstream: ClientConnection, *, report_close: bool = True) -> None:
         """Run both directions concurrently; stop as soon as either finishes."""
         up = asyncio.create_task(self._client_to_agent(upstream), name="client->agent")
         down = asyncio.create_task(self._agent_to_client(upstream), name="agent->client")
@@ -88,7 +106,8 @@ class AgentSession:
             if (exc := task.exception()) is not None:
                 log.error("%s failed: %s", task.get_name(), exc)
 
-        await self._report_close(upstream)
+        if report_close:
+            await self._report_close(upstream)
 
     async def _report_close(self, upstream: ClientConnection) -> None:
         """Explain an abnormal upstream close to the client.
@@ -119,7 +138,9 @@ class AgentSession:
 
     async def _client_to_agent(self, upstream: ClientConnection) -> None:
         async for chunk_b64 in self._transport.recv_audio():
-            await upstream.send(json.dumps({"type": p.INPUT_AUDIO, "audio": chunk_b64}))
+            await upstream.send(
+                json.dumps({"type": p.INPUT_AUDIO, p.INPUT_AUDIO_FIELD: chunk_b64})
+            )
 
     async def _agent_to_client(self, upstream: ClientConnection) -> None:
         async for raw in upstream:
@@ -134,7 +155,9 @@ class AgentSession:
         kind = msg.get("type")
 
         if kind == p.REPLY_AUDIO:
-            if audio := msg.get("audio"):
+            # reply.audio carries "data", while input.audio carries "audio".
+            # Reading the wrong key drops every spoken reply in silence.
+            if audio := msg.get(p.REPLY_AUDIO_FIELD):
                 await self._transport.send_audio(audio)
             return
 
@@ -144,6 +167,7 @@ class AgentSession:
             await self._transport.clear()
 
         elif kind == p.SESSION_READY:
+            self._ready = True
             self._session_id = msg.get("session_id")
             log.info("session ready: %s", self._session_id)
 

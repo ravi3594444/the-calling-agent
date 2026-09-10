@@ -65,17 +65,31 @@ def run_tool(name: str, args: dict[str, Any]) -> tuple[str, bool]:
         return f"Error running {name}: {exc}", True
 
 
-def build_session_update(encoding: str) -> dict[str, Any]:
+def build_session_update(encoding: str, *, tune_turns: bool = True) -> dict[str, Any]:
     """Build the session.update message for a transport's audio encoding.
 
     Both input and output formats are pinned to the same encoding. If they
     differ, the agent's reply comes back in a format the transport cannot
     play without transcoding.
+
+    `tune_turns` exists so the caller can retry without the turn-detection
+    block: it is the newest and least-documented part of the payload, and a
+    single unknown field there is rejected with 1008, taking down the whole
+    session rather than just that setting.
     """
     # Stored-agent mode: agent_id must be the only field in `session`.
     # Prompt, greeting and tools are applied server-side.
     if settings.agent_id:
         return {"type": SESSION_UPDATE, "session": {"agent_id": settings.agent_id}}
+
+    audio_in: dict[str, Any] = {"type": "audio", "format": {"encoding": encoding}}
+    if tune_turns and settings.turn_detection:
+        audio_in["turn_detection"] = {
+            "vad_threshold": settings.vad_threshold,
+            "min_silence": settings.min_silence_ms,
+            "max_silence": settings.max_silence_ms,
+            "interrupt_response": settings.allow_interruptions,
+        }
 
     return {
         "type": SESSION_UPDATE,
@@ -83,7 +97,7 @@ def build_session_update(encoding: str) -> dict[str, Any]:
             "system_prompt": SYSTEM_PROMPT,
             "greeting": settings.agent_greeting,
             "tools": TOOLS,
-            "input": {"type": "audio", "format": {"encoding": encoding}},
+            "input": audio_in,
             "output": {
                 "type": "audio",
                 "voice": settings.agent_voice,
