@@ -152,7 +152,7 @@ def test_tool_call_round_trips(upstream):
     upstream.will_send(
         {
             "type": "tool.call",
-            "name": "get_current_time",
+            "name": "restaurant_info",
             "call_id": "call-7",
             "arguments": {},
         }
@@ -163,7 +163,7 @@ def test_tool_call_round_trips(upstream):
     results = [m for m in upstream.received if m["type"] == "tool.result"]
     assert results, f"no tool.result sent; got {[m['type'] for m in upstream.received]}"
     assert results[0]["call_id"] == "call-7"
-    assert "UTC" in results[0]["result"]
+    assert "Opening hours" in results[0]["result"]
     assert results[0]["is_error"] is False
 
 
