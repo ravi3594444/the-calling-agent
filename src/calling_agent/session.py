@@ -32,6 +32,11 @@ class AgentSession:
         self._voice = voice
         self._session_id: str | None = None
         self._ready = False
+        # Set on barge-in. Chunks for the cancelled turn are already on the
+        # wire and cannot be recalled, so they are dropped here instead of
+        # played -- otherwise the agent talks over the caller for the second or
+        # so of audio still in transit.
+        self._suppress_audio = False
 
     async def run(self) -> None:
         """Open the upstream connection and pump audio until either side ends."""
@@ -163,16 +168,26 @@ class AgentSession:
         kind = msg.get("type")
 
         if kind == p.REPLY_AUDIO:
+            # Late audio from a turn the caller interrupted.
+            if self._suppress_audio:
+                return
             # reply.audio carries "data", while input.audio carries "audio".
             # Reading the wrong key drops every spoken reply in silence.
             if audio := msg.get(p.REPLY_AUDIO_FIELD):
                 await self._transport.send_audio(audio)
             return
 
-        if kind == p.INPUT_SPEECH_STARTED:
+        if kind == p.INPUT_SPEECH_STARTED and settings.allow_interruptions:
             # Barge-in: the user cut in, so drop whatever is still queued for
-            # playback or the agent talks over them.
+            # playback or the agent talks over them. Gated on the same setting
+            # that tells the API to allow interruptions -- otherwise disabling
+            # them upstream would still cut playback here.
+            self._suppress_audio = True
             await self._transport.clear()
+
+        elif kind == p.REPLY_STARTED:
+            # A genuinely new turn; audio is wanted again.
+            self._suppress_audio = False
 
         elif kind == p.SESSION_READY:
             self._ready = True

@@ -184,6 +184,37 @@ synthetic no matter who speaks them, so `SYSTEM_PROMPT` in
 varied sentence length, and natural openers. Edit that before concluding a
 voice is bad.
 
+## Interrupting the agent
+
+You can cut in while it is talking and it stops immediately. Two things make
+that work:
+
+1. `interrupt_response: true` tells the API to abandon the turn it is
+   generating.
+2. On `input.speech.started` the relay tells the browser to drop every queued
+   audio buffer.
+
+There is a third part that is easy to miss. The API cannot recall bytes it has
+already put on the wire, so roughly a second of audio for the cancelled turn
+still arrives after you interrupt. Those chunks are **dropped** rather than
+played, until the next `reply.started` marks a genuinely new turn. Without
+that, the agent stops, then carries on talking over you for another second and
+a half.
+
+Set `AGENT_ALLOW_INTERRUPTIONS=false` to turn the whole behaviour off; that
+disables it both upstream and in the browser.
+
+### If it interrupts itself
+
+On a laptop or a phone speaker, the agent's own voice can reach the mic and be
+heard as you starting to talk, which cuts it off mid-sentence. `getUserMedia`
+is requested with `echoCancellation` on, which handles most of it. If it still
+happens:
+
+- Use headphones. This removes the problem entirely.
+- Raise `AGENT_VAD_THRESHOLD` toward `0.7` so quiet sound is not treated as
+  speech.
+
 ## Making it feel faster
 
 Most of the delay is upstream: AssemblyAI advertises **~1 s end-to-end** for

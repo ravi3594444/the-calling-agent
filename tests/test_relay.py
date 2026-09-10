@@ -386,3 +386,67 @@ def test_voices_endpoint_lists_the_multilingual_options(upstream):
     # arjun code-switches Hindi/English, which is why it is the default.
     assert "arjun" in body["known"]
     assert "Multilingual" in body["known"]["arjun"]
+
+
+def test_audio_after_barge_in_is_dropped(upstream):
+    """Chunks already in flight when the caller cuts in must not play.
+
+    The API cannot recall bytes it has already sent, so without this the agent
+    keeps talking over the caller for however much audio was in transit.
+    """
+    late = base64.b64encode(b"\x0a\x0b" * 40).decode()
+    upstream.will_send(
+        {"type": "input.speech.started"},
+        {"type": "reply.audio", "data": late},
+        {"type": "reply.done", "status": "interrupted"},
+    )
+
+    with _client().websocket_connect("/ws") as ws:
+        assert _drain(ws, "clear") is not None
+        # Everything after the clear should be non-audio.
+        for _ in range(6):
+            msg = ws.receive_json()
+            assert msg["type"] != "audio", "late audio leaked through after barge-in"
+            if msg.get("event", {}).get("type") == "reply.done":
+                break
+
+
+def test_a_new_turn_resumes_audio_after_a_barge_in(upstream):
+    """Suppression must not outlive the interrupted turn."""
+    fresh = base64.b64encode(b"\x0c\x0d" * 40).decode()
+    upstream.will_send(
+        {"type": "input.speech.started"},
+        {"type": "reply.audio", "data": base64.b64encode(b"\x00" * 20).decode()},
+        {"type": "reply.started"},
+        {"type": "reply.audio", "data": fresh},
+    )
+
+    with _client().websocket_connect("/ws") as ws:
+        assert _drain(ws, "clear") is not None
+        assert _drain(ws, "audio")["data"] == fresh
+
+
+def test_disabling_interruptions_also_stops_cutting_playback(upstream, monkeypatch):
+    """One setting, one behaviour.
+
+    Turning interruptions off upstream must not leave the client still
+    truncating the agent whenever it detects speech.
+    """
+    from calling_agent.config import settings
+
+    monkeypatch.setattr(settings, "allow_interruptions", False)
+    speech = base64.b64encode(b"\x0e\x0f" * 40).decode()
+    upstream.will_send(
+        {"type": "input.speech.started"},
+        {"type": "reply.audio", "data": speech},
+    )
+
+    with _client().websocket_connect("/ws") as ws:
+        for _ in range(8):
+            msg = ws.receive_json()
+            assert msg["type"] != "clear", "playback was cut despite interruptions off"
+            if msg["type"] == "audio":
+                assert msg["data"] == speech
+                break
+        else:
+            raise AssertionError("audio never arrived")
