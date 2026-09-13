@@ -1,5 +1,26 @@
 // A small Canvas 2D field. No WebGL, textures, animation framework or DOM work
 // per frame. Live deformation uses the same audio graph as audible playback.
+
+const RINGS = 17;
+const POINTS = 100;
+const DOTS = 64;
+
+// The angle and its harmonics depend only on the point index, never on the
+// ring or the clock, so they are computed once instead of RINGS times a frame.
+const COS = new Float32Array(POINTS + 1);
+const SIN = new Float32Array(POINTS + 1);
+const H3 = new Float32Array(POINTS + 1);
+const H2 = new Float32Array(POINTS + 1);
+const H7 = new Float32Array(POINTS + 1);
+for (let point = 0; point <= POINTS; point++) {
+  const angle = (point / POINTS) * Math.PI * 2;
+  COS[point] = Math.cos(angle);
+  SIN[point] = Math.sin(angle);
+  H3[point] = angle * 3;
+  H2[point] = angle * 2;
+  H7[point] = angle * 7;
+}
+
 export class VoiceField {
   constructor(canvas, level = () => 0) {
     this.canvas = canvas;
@@ -66,40 +87,56 @@ export class VoiceField {
     ctx.scale(scale, scale);
     ctx.rotate(time * (thinking ? 0.12 : 0.025));
     const energy = this.amplitude * 19;
+    const saturation = speaking ? 51 : 32;
+    // Colour changes only with hue, saturation and amplitude, none of which
+    // vary across a ring. Quantising amplitude lets the strings be reused
+    // between frames instead of rebuilt 17 times each one.
+    const band = Math.round(this.amplitude * 20);
+    if (
+      this.strokeHue !== hue ||
+      this.strokeSaturation !== saturation ||
+      this.strokeBand !== band
+    ) {
+      this.strokeHue = hue;
+      this.strokeSaturation = saturation;
+      this.strokeBand = band;
+      this.strokes ||= new Array(RINGS);
+      for (let ring = 0; ring < RINGS; ring++) {
+        const alpha = 0.1 + Math.sin((ring / RINGS) * Math.PI) * 0.36 + (band / 20) * 0.14;
+        this.strokes[ring] = `hsla(${hue}, ${saturation}%, ${65 + ring}%, ${alpha})`;
+      }
+    }
     // The asymmetric contours read as a soft, living ring, not a loading icon.
-    for (let ring = 0; ring < 17; ring++) {
+    for (let ring = 0; ring < RINGS; ring++) {
       const radius = 57 + ring * 3.05;
+      const spread = 0.4 + ring / 24;
+      const phase3 = time + ring * 0.19;
+      const phase7 = ring * 0.14 - time * 1.7;
+      const swing = 6 + energy;
+      const ripple = 1.7 + energy * 0.25;
+      const drift = time * 0.6;
       ctx.beginPath();
-      for (let point = 0; point <= 150; point++) {
-        const angle = (point / 150) * Math.PI * 2;
+      for (let point = 0; point <= POINTS; point++) {
         const wave =
-          Math.sin(angle * 3 + time + ring * 0.19) *
-            Math.cos(angle * 2 - time * 0.6) *
-            (6 + energy) +
-          Math.sin(angle * 7 - time * 1.7 + ring * 0.14) * (1.7 + energy * 0.25);
-        const r = radius + wave * (0.4 + ring / 24);
-        const x = Math.cos(angle) * r;
-        const y = Math.sin(angle) * r * 0.95;
+          Math.sin(H3[point] + phase3) * Math.cos(H2[point] - drift) * swing +
+          Math.sin(H7[point] + phase7) * ripple;
+        const r = radius + wave * spread;
+        const x = COS[point] * r;
+        const y = SIN[point] * r * 0.95;
         if (!point) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
       ctx.closePath();
-      ctx.strokeStyle =
-        'hsla(' +
-        hue +
-        ', ' +
-        (speaking ? 51 : 32) +
-        '%, ' +
-        (65 + ring) +
-        '%, ' +
-        (0.1 + Math.sin((ring / 17) * Math.PI) * 0.36 + this.amplitude * 0.14) +
-        ')';
+      ctx.strokeStyle = this.strokes[ring];
       ctx.lineWidth = ring % 4 === 0 ? 1.15 : 0.65;
       ctx.stroke();
     }
     // Sparse dust catches the light without a particle allocation loop.
-    for (let dot = 0; dot < 64; dot++) {
-      const angle = dot * 2.39996 + time * 0.015;
+    // Kept as direct arc fills: blitting a rotated, alpha-blended offscreen
+    // canvas measured slower than redrawing these each frame.
+    ctx.rotate(time * 0.015);
+    for (let dot = 0; dot < DOTS; dot++) {
+      const angle = dot * 2.39996;
       const r = 105 + Math.sin(dot * 4.9) * 14 + Math.sin(time + dot) * 2;
       const alpha = 0.12 + (Math.sin(dot + time) + 1) * 0.13;
       ctx.fillStyle = 'hsla(' + hue + ',40%,75%,' + alpha + ')';
