@@ -25,7 +25,7 @@ def _definition(**overrides) -> AgentDefinition:
         "build_prompt": lambda: "PROMPT FROM THE OTHER AGENT",
         "greeting": "greeting from the other agent",
         "tools": [{"type": "function", "name": "other_tool", "parameters": {}}],
-        "run_tool": lambda name, args: ("ran", False),
+        "run_tool": lambda name, args, call_id="": ("ran", False),
     }
     return AgentDefinition(**{**base, **overrides})
 
@@ -106,10 +106,10 @@ async def test_session_runs_the_injected_tool_not_the_restaurants():
     Mutation: `self._agent.run_tool` -> the imported `run_tool` kills this,
     because `restaurant_info` is a real restaurant tool and would succeed.
     """
-    called: list[tuple[str, dict]] = []
+    called: list[tuple[str, dict, str]] = []
 
-    def only_tool(name, args):
-        called.append((name, args))
+    def only_tool(name, args, call_id=""):
+        called.append((name, args, call_id))
         return "from the other agent", False
 
     session = AgentSession(_Transport(), agent=_definition(run_tool=only_tool))
@@ -127,7 +127,9 @@ async def test_session_runs_the_injected_tool_not_the_restaurants():
     await session._handle_tool_call(
         upstream, {"name": "restaurant_info", "call_id": "c1", "arguments": {}}
     )
-    assert called == [("restaurant_info", {})]
+    # The call id reaches the tool: it is what lets an agent tell a retry of
+    # one call from a second, different call in the same conversation.
+    assert called == [("restaurant_info", {}, "c1")]
 
 
 # --- AGENT_FACTORY: another codebase serving its own agent through this relay ---
@@ -231,3 +233,66 @@ def test_a_connection_with_no_parameters_still_builds(monkeypatch):
     )
     assert _build_agent() is not None
     assert _FACTORY_CALLS == [{}]
+
+
+@pytest.mark.asyncio
+async def test_two_different_tool_calls_get_two_different_ids():
+    """What the call id is FOR.
+
+    An agent whose tools write (an order, a booking) must tell a retry of one
+    call from a second, different call. The session id cannot do it -- it is
+    the same for every call in the conversation -- so an agent keyed on it
+    answers the caller's second order with their first.
+
+    Mutation: passing a constant, or the session id, in place of call_id kills
+    this.
+    """
+    vistos: list[str] = []
+
+    def recordar(name, args, call_id=""):
+        vistos.append(call_id)
+        return "ok", False
+
+    session = AgentSession(_Transport(), agent=_definition(run_tool=recordar))
+
+    class _Upstream:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, raw):
+            import json
+
+            self.sent.append(json.loads(raw))
+
+    upstream = _Upstream()
+    await session._handle_tool_call(
+        upstream, {"name": "book_table", "call_id": "call-1", "arguments": {}}
+    )
+    await session._handle_tool_call(
+        upstream, {"name": "book_table", "call_id": "call-2", "arguments": {}}
+    )
+    assert vistos == ["call-1", "call-2"]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_with_no_id_still_runs():
+    """The provider may omit it; a missing id is a weaker hint, not a failure."""
+    vistos: list[str] = []
+
+    def recordar(name, args, call_id=""):
+        vistos.append(call_id)
+        return "ok", False
+
+    session = AgentSession(_Transport(), agent=_definition(run_tool=recordar))
+
+    class _Upstream:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, raw):
+            import json
+
+            self.sent.append(json.loads(raw))
+
+    await session._handle_tool_call(_Upstream(), {"name": "book_table", "arguments": {}})
+    assert vistos == [""]

@@ -38,10 +38,18 @@ class AgentDefinition:
     #: Tool declarations, in the API's JSON Schema shape (see protocol.py).
     tools: list[dict[str, Any]]
 
-    #: (name, arguments) -> (result, is_error). Runs in a worker thread, so it
-    #: may block; it must not raise, because the API wants an error flagged
-    #: rather than a dropped call.
-    run_tool: Callable[[str, dict[str, Any]], tuple[str, bool]]
+    #: (name, arguments, call_id) -> (result, is_error). Runs in a worker
+    #: thread, so it may block; it must not raise, because the API wants an
+    #: error flagged rather than a dropped call.
+    #:
+    #: `call_id` identifies ONE tool call within the session, and it is here
+    #: because an agent whose tools have side effects needs to tell a repeat of
+    #: the same call from a second, different one. Without it the only
+    #: identifier available is the session, which is the same for every call in
+    #: a conversation: an agent that keyed an order on it would answer the
+    #: caller's second order with their first. It may be empty if the provider
+    #: omits it, so treat it as a hint and not a guarantee.
+    run_tool: Callable[[str, dict[str, Any], str], tuple[str, bool]]
 
     #: Overrides AGENT_VOICE for this agent. None means use the configured one.
     voice: str | None = None

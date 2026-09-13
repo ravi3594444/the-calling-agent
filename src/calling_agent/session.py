@@ -319,7 +319,9 @@ class AgentSession:
                 {"type": "tool.activity", "status": "started", "name": name, "call_id": call_id}
             )
             started = perf_counter()
-            result, is_error = await asyncio.to_thread(self._agent.run_tool, name, args)
+            result, is_error = await asyncio.to_thread(
+                self._agent.run_tool, name, args, call_id or ""
+            )
             elapsed_ms = round((perf_counter() - started) * 1000)
             # Do not put caller names, phone numbers or booking notes in logs.
             log.info("tool %s completed in %dms (error=%s)", name, elapsed_ms, is_error)

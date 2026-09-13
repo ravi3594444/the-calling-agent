@@ -97,7 +97,7 @@ async def test_missing_key_closes_transport(monkeypatch):
 async def test_slow_tool_does_not_block_audio_or_interruption(monkeypatch):
     entered, release = threading.Event(), threading.Event()
 
-    def slow_tool(*_):
+    def slow_tool(*_args, **_kwargs):
         entered.set()
         assert release.wait(2)
         return "Tool completed", False
@@ -146,7 +146,7 @@ async def test_timeout_guard_can_await_send_without_cancelling_itself(monkeypatc
 async def test_duplicate_tool_call_executes_side_effect_once():
     calls = []
 
-    def action(*args):
+    def action(*args, **kwargs):
         calls.append(args)
         return "Booked once", False
 

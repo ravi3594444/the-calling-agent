@@ -128,8 +128,12 @@ NEVER
 SYSTEM_PROMPT = _build_prompt()
 
 
-def run_tool(name: str, args: dict[str, Any]) -> tuple[str, bool]:
+def run_tool(name: str, args: dict[str, Any], call_id: str = "") -> tuple[str, bool]:
     """Execute a tool call.
+
+    `call_id` is unused here: the restaurant's tools are keyed on the booking
+    reference they return, not on the call that made them. An agent whose
+    writes need to tell a retry from a second, different write uses it.
 
     Returns (result, is_error) -- the API wants errors flagged rather than
     disguised as a successful result, so the agent can say something sensible.
