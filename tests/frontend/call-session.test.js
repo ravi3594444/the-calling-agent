@@ -373,3 +373,30 @@ test('real audio setup aborts promptly and stops a late permission stream', asyn
     else delete globalThis.navigator;
   }
 });
+
+test('default timers survive being called as instance methods', () => {
+  // Browsers throw "Illegal invocation" when setTimeout is called with any
+  // receiver other than the global, and CallSession stores its timers on the
+  // instance. Node imposes no such rule, so every other test here -- which
+  // injects its own timers -- passes while the real page dies on the first
+  // timer call: the call hangs in "connecting" and the end-call button, which
+  // also clears a timer, silently does nothing.
+  const realSet = globalThis.setTimeout;
+  const realClear = globalThis.clearTimeout;
+  const strict = (real) =>
+    function (...args) {
+      if (this !== globalThis && this !== undefined) throw new TypeError('Illegal invocation');
+      return real.apply(globalThis, args);
+    };
+  globalThis.setTimeout = strict(realSet);
+  globalThis.clearTimeout = strict(realClear);
+  try {
+    // Only origin is supplied; the timers must come from the defaults.
+    const session = new CallSession({ origin: 'https://demo.example' });
+    const handle = session.setTimer(() => {}, 0);
+    session.clearTimer(handle);
+  } finally {
+    globalThis.setTimeout = realSet;
+    globalThis.clearTimeout = realClear;
+  }
+});
