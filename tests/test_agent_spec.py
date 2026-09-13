@@ -128,3 +128,78 @@ async def test_session_runs_the_injected_tool_not_the_restaurants():
         upstream, {"name": "restaurant_info", "call_id": "c1", "arguments": {}}
     )
     assert called == [("restaurant_info", {})]
+
+
+# --- AGENT_FACTORY: another codebase serving its own agent through this relay ---
+
+_FACTORY_CALLS: list[int] = []
+
+
+def _factory_for_tests():
+    """Module-level so AGENT_FACTORY can address it as a real import path.
+
+    The prompt captures the count AT BUILD TIME. A lambda reading the list when
+    called instead reports the latest count for every agent ever built, which
+    is the bug this test exists to catch -- so the double must not have it.
+    """
+    _FACTORY_CALLS.append(1)
+    numero = len(_FACTORY_CALLS)
+    return _definition(build_prompt=lambda: f"call #{numero}")
+
+
+def _broken_factory():
+    raise RuntimeError("this deployment variable has a typo in it")
+
+
+def _not_an_agent():
+    return {"name": "a dict is not an AgentDefinition"}
+
+
+def test_no_factory_configured_means_the_restaurant():
+    from calling_agent.main import _build_agent
+
+    assert _build_agent() is None
+
+
+def test_factory_runs_once_per_connection_not_once_per_process(monkeypatch):
+    """The one that matters: a per-caller agent must not outlive its caller.
+
+    Mutation: resolving AGENT_FACTORY at import and reusing the result kills
+    this, because the second call would return the first call's prompt.
+    """
+    from calling_agent.main import _build_agent
+
+    _FACTORY_CALLS.clear()
+    monkeypatch.setattr(
+        settings, "agent_factory", "test_agent_spec:_factory_for_tests"
+    )
+    first = _build_agent()
+    second = _build_agent()
+    assert len(_FACTORY_CALLS) == 2
+    assert first.build_prompt() == "call #1"
+    assert second.build_prompt() == "call #2"
+
+
+def test_a_broken_factory_still_answers_the_phone(monkeypatch):
+    """A typo in a deployment variable must not be a phone that rings out."""
+    from calling_agent.main import _build_agent
+
+    monkeypatch.setattr(
+        settings, "agent_factory", "test_agent_spec:_broken_factory"
+    )
+    assert _build_agent() is None
+
+
+def test_a_factory_naming_nothing_falls_back(monkeypatch):
+    from calling_agent.main import _build_agent
+
+    monkeypatch.setattr(settings, "agent_factory", "calling_agent.main:no_such_name")
+    assert _build_agent() is None
+
+
+def test_a_factory_returning_the_wrong_type_falls_back(monkeypatch):
+    """Otherwise the failure surfaces as an AttributeError mid-call."""
+    from calling_agent.main import _build_agent
+
+    monkeypatch.setattr(settings, "agent_factory", "test_agent_spec:_not_an_agent")
+    assert _build_agent() is None

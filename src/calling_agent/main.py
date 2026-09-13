@@ -1,5 +1,6 @@
 """FastAPI app: serves the browser client and bridges its audio to the agent."""
 
+import importlib
 import logging
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .agent_config import KNOWN_VOICES
+from .agent_spec import AgentDefinition
 from .config import settings
 from .diagnostics import run_diagnostics
 from .session import AgentSession
@@ -23,6 +25,34 @@ STATIC_DIR = Path(__file__).resolve().parents[2] / "static"
 
 app = FastAPI(title="calling-agent", version="0.1.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+def _build_agent() -> AgentDefinition | None:
+    """Resolve AGENT_FACTORY for one connection, or None for the restaurant.
+
+    Called per connection rather than at import, because a factory that binds
+    an agent to its caller (an account, a phone number, a call id) must not
+    hand the first caller's identity to everyone after them. A factory that
+    ignores the distinction loses nothing by being called again.
+
+    A broken factory serves the restaurant rather than dropping the call: a
+    typo in a deployment variable should not be the difference between a phone
+    that answers and one that rings out.
+    """
+    spec = settings.agent_factory.strip()
+    if not spec:
+        return None
+    try:
+        module_path, _, attribute = spec.partition(":")
+        factory = getattr(importlib.import_module(module_path), attribute)
+        agent = factory()
+    except Exception as exc:  # noqa: BLE001 - never drop a call over config
+        log.error("AGENT_FACTORY %r failed (%s); serving the default agent", spec, exc)
+        return None
+    if not isinstance(agent, AgentDefinition):
+        log.error("AGENT_FACTORY %r returned %s, not an AgentDefinition", spec, type(agent))
+        return None
+    return agent
 
 
 @app.get("/healthz")
@@ -96,7 +126,12 @@ async def ws(websocket: WebSocket, resume: str | None = None, voice: str | None 
     await websocket.accept()
     client = websocket.client.host if websocket.client else "unknown"
     log.info("browser connected from %s%s", client, " (resuming)" if resume else "")
-    await AgentSession(BrowserTransport(websocket), resume_session_id=resume, voice=voice).run()
+    await AgentSession(
+        BrowserTransport(websocket),
+        resume_session_id=resume,
+        voice=voice,
+        agent=_build_agent(),
+    ).run()
     log.info("session for %s ended", client)
 
 

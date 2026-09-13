@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     # Optional stored-agent binding. Mutually exclusive with inline config.
     agent_id: str = Field(default="", alias="AGENT_ID")
 
+    # "module.path:callable" -- a zero-argument callable returning an
+    # AgentDefinition, called ONCE PER CONNECTION so the agent it builds can be
+    # bound to that caller. Empty means the restaurant, which is the whole of
+    # this repo's own behaviour. It exists so another codebase can serve its own
+    # agent through this relay and this UI without forking either.
+    agent_factory: str = Field(default="", alias="AGENT_FACTORY")
+
     # --- Turn detection: the main lever on perceived response speed ---
     # min_silence is how long the caller must stop talking before the agent
     # decides they are done. Lowering it makes replies feel faster but risks
