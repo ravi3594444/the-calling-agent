@@ -16,7 +16,8 @@ from typing import Any
 import websockets
 
 from . import protocol as p
-from .agent_config import build_session_update
+from .agent_config import RESTAURANT, build_session_update
+from .agent_spec import AgentDefinition
 from .config import settings
 
 log = logging.getLogger(__name__)
@@ -31,8 +32,30 @@ def _step(name: str, ok: bool, **extra: Any) -> dict:
     return {"step": name, "ok": ok, **extra}
 
 
-async def run_diagnostics() -> dict:
+def _payload_de_la_sesion(agent: "AgentDefinition | None") -> dict:
+    """The opening payload a LIVE call with this agent would send.
+
+    Its own function so a test can assert it carries the configured agent
+    without opening a socket. Dropping `agent=` here is the whole of the defect
+    it exists to pin: /diagnose then validates the restaurant while every real
+    call sends something else.
+    """
+    return build_session_update(p.ENCODING_PCM, agent=agent)
+
+
+async def run_diagnostics(agent: "AgentDefinition | None" = None) -> dict:
+    """Walk the real call path. `agent` is the definition a live call would use.
+
+    None means the restaurant, which is right only when no AGENT_FACTORY is
+    configured: diagnosing the default while live calls send something else is
+    a green /diagnose next to a phone that refuses every session.
+    """
     steps: list[dict] = []
+
+    # 0. WHICH agent this is about. First, and outside every early return: a
+    # report that does not name the agent it built can be read as covering one
+    # it never touched.
+    steps.append(_step("agent", True, detail=f"diagnosing {(agent or RESTAURANT).name}"))
 
     # 1. Is the key even configured?
     if not settings.assemblyai_api_key:
@@ -102,7 +125,7 @@ async def run_diagnostics() -> dict:
 
     # 3. Send the real session config and watch what comes back.
     async with upstream:
-        payload = build_session_update(p.ENCODING_PCM)
+        payload = _payload_de_la_sesion(agent)
         await upstream.send(json.dumps(payload))
 
         seen: list[str] = []

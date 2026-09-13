@@ -53,3 +53,9 @@ class AgentDefinition:
 
     #: Overrides AGENT_VOICE for this agent. None means use the configured one.
     voice: str | None = None
+
+    #: What the BROWSER should call this, if it asks (/experience). None means
+    #: the configured restaurant name, which is right only for the restaurant.
+    #: A page that serves another agent under this relay otherwise shows the
+    #: restaurant's name over someone else's product.
+    display_name: str | None = None

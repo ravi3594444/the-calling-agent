@@ -16,6 +16,9 @@ const passthrough = Object.fromEntries(
 const live = new CallSession({ emit: handle, passthrough });
 const demo = new DemoSession(handle);
 let mode = 'live';
+// False until the person actually chooses a voice (or chose one before, and it
+// came back from localStorage). See the call to live.start().
+let voicePickedByUser = false;
 let controller = live;
 let configured = null;
 let restaurant = 'The Copper Kettle';
@@ -410,7 +413,11 @@ function setMode(next) {
 function start(scenario = null) {
   reset();
   if (mode === 'demo') demo.start(scenario);
-  else live.start($('voice').value);
+  // Only a DELIBERATE pick is sent. The picker's default is the server's
+  // configured voice, and `?voice=` outranks the one an agent chose for
+  // itself, so sending it unconditionally meant a factory-supplied voice never
+  // reached a single call started from this page.
+  else live.start(voicePickedByUser ? $('voice').value : undefined);
 }
 $('call').addEventListener('click', () => {
   if (controller.active) {
@@ -442,6 +449,7 @@ $('sound').addEventListener('click', () => {
   $('sound').setAttribute('aria-label', value ? 'Unmute agent audio' : 'Mute agent audio');
 });
 $('voice').addEventListener('change', () => {
+  voicePickedByUser = true;
   try {
     localStorage.setItem('voice', $('voice').value);
   } catch {
@@ -501,7 +509,12 @@ async function boot() {
     const { current, known } = results[1].value;
     let chosen = current;
     try {
-      chosen = localStorage.getItem('voice') || current;
+      const guardado = localStorage.getItem('voice');
+      if (guardado) {
+        chosen = guardado;
+        // A remembered choice is still the person's choice.
+        voicePickedByUser = true;
+      }
     } catch {
       /* private mode */
     }

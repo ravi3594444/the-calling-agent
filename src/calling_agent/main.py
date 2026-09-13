@@ -10,7 +10,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .agent_config import KNOWN_VOICES
+from .agent_config import KNOWN_VOICES, RESTAURANT
 from .agent_spec import AgentDefinition
 from .config import settings
 from .diagnostics import run_diagnostics
@@ -77,8 +77,12 @@ def _build_agent(params: Mapping[str, str] | None = None) -> AgentDefinition | N
         module_path, _, attribute = spec.partition(":")
         factory = getattr(importlib.import_module(module_path), attribute)
         agent = factory(dict(params or {}))
-    except Exception as exc:  # noqa: BLE001 - never drop a call over config
-        log.error("AGENT_FACTORY %r failed (%s); serving the default agent", spec, exc)
+    except Exception:  # noqa: BLE001 - never drop a call over config
+        # log.exception, not log.error: this handler covers a dynamic import, an
+        # attribute lookup and arbitrary third-party code, and all three end in
+        # the same fallback. Without the traceback, "the factory failed" is the
+        # only thing anyone ever learns about any of them.
+        log.exception("AGENT_FACTORY %r failed; serving the default agent", spec)
         return None
     if not isinstance(agent, AgentDefinition):
         log.error("AGENT_FACTORY %r returned %s, not an AgentDefinition", spec, type(agent))
@@ -108,9 +112,18 @@ async def voices() -> dict:
 
 @app.get("/experience")
 async def experience() -> dict:
-    """Public product context, with no secrets and no billable upstream call."""
+    """Public product context, with no secrets and no billable upstream call.
+
+    The name comes from the CONFIGURED agent, not from the restaurant settings:
+    a relay serving someone else's agent otherwise labels their product with
+    the restaurant's name. Resolved without connection parameters, so a factory
+    that varies by caller answers for its default caller — which is all a page
+    can ask before anyone has called.
+    """
+    agente = _build_agent() or RESTAURANT
     return {
-        "restaurant": settings.restaurant_name,
+        "restaurant": agente.display_name or settings.restaurant_name,
+        "agent": agente.name,
         "cuisine": settings.restaurant_cuisine,
         "live_configured": bool(settings.assemblyai_api_key),
         "booking_storage": "memory",
@@ -125,7 +138,10 @@ async def diagnose() -> dict:
     Read-only apart from opening one short agent session, which is billable
     but brief. Open this in a browser when the page will not talk.
     """
-    return await run_diagnostics()
+    # The CONFIGURED agent, not the restaurant: diagnosing a payload that no
+    # live call ever sends is how /diagnose reports a healthy session while
+    # every real one is refused for a malformed prompt or tool declaration.
+    return await run_diagnostics(agent=_build_agent())
 
 
 @app.get("/")

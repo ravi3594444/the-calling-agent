@@ -45,7 +45,9 @@ async function load({ liveConfigured = false } = {}) {
       this.muted = false;
       this.outputMuted = false;
     }
-    start() {
+    start(voice) {
+      this.startedWith = voice;
+      window.__voicesStarted = (window.__voicesStarted || []).concat([voice]);
       this.active = true;
       this.phase = 'connecting';
       this.emit({ type: 'state', phase: this.phase, active: true });
@@ -176,4 +178,23 @@ test('ending a pending demo cancels all steps; a new run starts with a clean tra
   } finally {
     f.dom.window.close();
   }
+});
+
+test('a call started without touching the picker sends no voice override', async () => {
+  // The picker's default is the SERVER's configured voice, and `?voice=`
+  // outranks the one an agent chose for itself. Sending it unconditionally
+  // meant a factory-supplied voice never reached a single call from this page.
+  const { window, byId } = await load({ liveConfigured: true });
+  window.__voicesStarted = [];
+  byId('call').click();
+  assert.deepEqual([...window.__voicesStarted], [undefined]);
+});
+
+test('a voice the person actually picked is sent', async () => {
+  const { window, byId } = await load({ liveConfigured: true });
+  window.__voicesStarted = [];
+  byId('voice').value = 'sophie';
+  byId('voice').dispatchEvent(new window.Event('change'));
+  byId('call').click();
+  assert.deepEqual([...window.__voicesStarted], ['sophie']);
 });

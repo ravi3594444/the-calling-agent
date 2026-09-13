@@ -242,6 +242,7 @@ def build_session_resume(session_id: str) -> dict[str, Any]:
 # AgentDefinition and hands it to AgentSession.
 RESTAURANT = AgentDefinition(
     name="restaurant",
+    display_name=settings.restaurant_name,
     build_prompt=_build_prompt,
     greeting=settings.agent_greeting,
     tools=TOOLS,

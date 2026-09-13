@@ -25,11 +25,20 @@ class Settings(BaseSettings):
     # Optional stored-agent binding. Mutually exclusive with inline config.
     agent_id: str = Field(default="", alias="AGENT_ID")
 
-    # "module.path:callable" -- a zero-argument callable returning an
-    # AgentDefinition, called ONCE PER CONNECTION so the agent it builds can be
-    # bound to that caller. Empty means the restaurant, which is the whole of
-    # this repo's own behaviour. It exists so another codebase can serve its own
-    # agent through this relay and this UI without forking either.
+    # "module.path:callable" -- a callable taking this connection's query
+    # parameters and returning an AgentDefinition. Called ONCE PER CONNECTION so
+    # the agent it builds can be bound to that caller. Empty means the
+    # restaurant, which is the whole of this repo's own behaviour. It exists so
+    # another codebase can serve its own agent through this relay and this UI
+    # without forking either.
+    #
+    # A RECONNECT IS A NEW CONNECTION, so the factory is called again -- and the
+    # upstream session it rejoins still has the prompt and tool declarations of
+    # the FIRST one. A factory whose answer varies between those two calls gets
+    # the first agent's tool calls dispatched into the second agent's tools. The
+    # parameters carry `resume` for exactly this: derive whatever must stay
+    # stable across a reconnect from it, and a factory that ignores it must
+    # return the same agent for the same parameters.
     agent_factory: str = Field(default="", alias="AGENT_FACTORY")
 
     # --- Turn detection: the main lever on perceived response speed ---

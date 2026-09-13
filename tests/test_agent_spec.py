@@ -296,3 +296,81 @@ async def test_a_tool_call_with_no_id_still_runs():
 
     await session._handle_tool_call(_Upstream(), {"name": "book_table", "arguments": {}})
     assert vistos == [""]
+
+
+def test_the_factory_sees_the_resume_id_of_a_reconnect(monkeypatch):
+    """A reconnect is a new connection, so the factory runs again -- but the
+    upstream session it rejoins keeps the FIRST agent's prompt and tools.
+
+    A factory whose answer varies between those two calls gets the first
+    agent's tool calls dispatched into the second agent's tools. `resume` is
+    what lets it stay stable, so it has to reach the factory.
+
+    Mutation: filtering `resume` out of the parameters kills this.
+    """
+    from calling_agent.main import _build_agent
+
+    _FACTORY_CALLS.clear()
+    monkeypatch.setattr(settings, "agent_factory", "test_agent_spec:_factory_for_tests")
+    _build_agent({"resume": "s-1", "telefono": "549351"})
+    assert _FACTORY_CALLS == [{"resume": "s-1", "telefono": "549351"}]
+
+
+def test_experience_names_the_configured_agent_not_the_restaurant(monkeypatch):
+    """A relay serving someone else's agent must not label their product with
+    the restaurant's name.
+
+    Mutation: reading settings.restaurant_name first kills this.
+    """
+    from fastapi.testclient import TestClient
+
+    from calling_agent.main import app
+
+    monkeypatch.setattr(settings, "restaurant_name", "The Copper Kettle")
+    monkeypatch.setattr(settings, "agent_factory", "test_agent_spec:_dairy_factory")
+    body = TestClient(app).get("/experience").json()
+    assert body["restaurant"] == "Lácteos Plus"
+    assert body["agent"] == "dairy"
+
+
+def test_experience_falls_back_to_the_restaurant_with_no_factory(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from calling_agent.main import app
+
+    monkeypatch.setattr(settings, "restaurant_name", "The Copper Kettle")
+    monkeypatch.setattr(settings, "agent_factory", "")
+    body = TestClient(app).get("/experience").json()
+    assert body["restaurant"] == "The Copper Kettle"
+    assert body["agent"] == "restaurant"
+
+
+def _dairy_factory(params):
+    return _definition(name="dairy", display_name="Lácteos Plus")
+
+
+def test_the_diagnostic_payload_carries_the_configured_agent():
+    """Mutation: dropping `agent=` from the diagnostic payload kills this.
+
+    Without it /diagnose validates the restaurant's prompt and tools while
+    every live call sends the configured agent's -- a green report next to a
+    phone that is refused on every session.
+    """
+    from calling_agent.diagnostics import _payload_de_la_sesion
+
+    sesion = _payload_de_la_sesion(_definition(build_prompt=lambda: "DAIRY PROMPT"))["session"]
+    assert sesion["system_prompt"] == "DAIRY PROMPT"
+    assert [tool["name"] for tool in sesion["tools"]] == ["other_tool"]
+
+
+def test_diagnose_reports_which_agent_it_built(monkeypatch):
+    """Mutation: calling run_diagnostics() without the agent kills this."""
+    from fastapi.testclient import TestClient
+
+    from calling_agent.main import app
+
+    monkeypatch.setattr(settings, "assemblyai_api_key", "")  # no billable call
+    monkeypatch.setattr(settings, "agent_factory", "test_agent_spec:_dairy_factory")
+    body = TestClient(app).get("/diagnose").json()
+    paso = next(s for s in body["steps"] if s["step"] == "agent")
+    assert "dairy" in paso["detail"]
