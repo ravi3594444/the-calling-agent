@@ -20,8 +20,15 @@ export class CallSession {
     setTimer = (...args) => setTimeout(...args),
     clearTimer = (...args) => clearTimeout(...args),
     origin = location.origin,
+    // Query parameters to forward to /ws on every connect, including each
+    // reconnect. The server hands them to AGENT_FACTORY, which is how an
+    // agent learns who is calling WITHOUT the caller being able to say it --
+    // so these have to survive a resume, or a dropped socket would silently
+    // demote the caller to anonymous mid-call.
+    passthrough = {},
   } = {}) {
     Object.assign(this, { emit, audioFactory, socketFactory, clock, setTimer, clearTimer, origin });
+    this.passthrough = passthrough;
     this.active = false;
     this.generation = 0;
     this.outputMuted = false;
@@ -122,6 +129,9 @@ export class CallSession {
     }
     const url = new URL('/ws', this.origin);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    for (const [key, value] of Object.entries(this.passthrough || {})) {
+      if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value);
+    }
     if (this.sessionId) url.searchParams.set('resume', this.sessionId);
     else if (this.voice) url.searchParams.set('voice', this.voice);
     let socket;

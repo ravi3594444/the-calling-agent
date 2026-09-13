@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { CallSession } from '../../static/js/call-session.js';
 import { base64ToPCM, pcmToBase64, CallAudio } from '../../static/js/audio.js';
 
-function fixture(startAudio = () => Promise.resolve()) {
+function fixture(startAudio = () => Promise.resolve(), passthrough = undefined) {
   const events = [],
     sockets = [],
     audios = [],
@@ -13,6 +13,7 @@ function fixture(startAudio = () => Promise.resolve()) {
   const session = new CallSession({
     emit: (event) => events.push(event),
     origin: 'https://demo.example',
+    passthrough,
     clock: () => now,
     setTimer: (fn) => {
       timers.set(++id, fn);
@@ -399,4 +400,26 @@ test('default timers survive being called as instance methods', () => {
     globalThis.setTimeout = realSet;
     globalThis.clearTimeout = realClear;
   }
+});
+
+test('passthrough parameters reach /ws and survive a reconnect', async () => {
+  // The caller identity arrives out-of-band, never through the conversation.
+  // It has to survive a resume too: a dropped socket that silently demoted the
+  // caller to anonymous would leave the agent taking an order for nobody.
+  const f = fixture(() => Promise.resolve(), { telefono: '5493511234567' });
+  await f.session.start('sophie');
+  f.ready();
+  assert.match(f.sockets[0].url, /telefono=5493511234567/);
+  const socket = f.sockets[0];
+  socket.onerror();
+  socket.onclose();
+  f.timer();
+  assert.match(f.sockets[1].url, /telefono=5493511234567/);
+  assert.match(f.sockets[1].url, /resume=s-1/);
+});
+
+test('empty passthrough values are not sent as blank parameters', async () => {
+  const f = fixture(() => Promise.resolve(), { telefono: '' });
+  await f.session.start('sophie');
+  assert.ok(!f.sockets[0].url.includes('telefono='));
 });

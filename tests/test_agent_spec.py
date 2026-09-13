@@ -135,23 +135,23 @@ async def test_session_runs_the_injected_tool_not_the_restaurants():
 _FACTORY_CALLS: list[int] = []
 
 
-def _factory_for_tests():
+def _factory_for_tests(params):
     """Module-level so AGENT_FACTORY can address it as a real import path.
 
     The prompt captures the count AT BUILD TIME. A lambda reading the list when
     called instead reports the latest count for every agent ever built, which
     is the bug this test exists to catch -- so the double must not have it.
     """
-    _FACTORY_CALLS.append(1)
+    _FACTORY_CALLS.append(params)
     numero = len(_FACTORY_CALLS)
     return _definition(build_prompt=lambda: f"call #{numero}")
 
 
-def _broken_factory():
+def _broken_factory(params):
     raise RuntimeError("this deployment variable has a typo in it")
 
 
-def _not_an_agent():
+def _not_an_agent(params):
     return {"name": "a dict is not an AgentDefinition"}
 
 
@@ -203,3 +203,31 @@ def test_a_factory_returning_the_wrong_type_falls_back(monkeypatch):
 
     monkeypatch.setattr(settings, "agent_factory", "test_agent_spec:_not_an_agent")
     assert _build_agent() is None
+
+
+def test_the_factory_receives_this_connection_s_query_parameters(monkeypatch):
+    """The only channel by which who-is-calling reaches an agent without going
+    through the conversation -- so a caller cannot talk their way into another
+    identity, and the model never sees the value.
+
+    Mutation: calling `factory()` with no argument kills this.
+    """
+    from calling_agent.main import _build_agent
+
+    _FACTORY_CALLS.clear()
+    monkeypatch.setattr(
+        settings, "agent_factory", "test_agent_spec:_factory_for_tests"
+    )
+    _build_agent({"telefono": "5493511234567"})
+    assert _FACTORY_CALLS == [{"telefono": "5493511234567"}]
+
+
+def test_a_connection_with_no_parameters_still_builds(monkeypatch):
+    from calling_agent.main import _build_agent
+
+    _FACTORY_CALLS.clear()
+    monkeypatch.setattr(
+        settings, "agent_factory", "test_agent_spec:_factory_for_tests"
+    )
+    assert _build_agent() is not None
+    assert _FACTORY_CALLS == [{}]

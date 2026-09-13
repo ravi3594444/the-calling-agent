@@ -6,7 +6,14 @@ const $ = (id) => document.getElementById(id);
 const text = (id, value) => {
   $(id).textContent = value;
 };
-const live = new CallSession({ emit: handle });
+// Anything on the page URL that is not ours is forwarded to /ws untouched, so
+// a deployment can identify the caller out-of-band -- ?telefono=... reaches
+// AGENT_FACTORY and never reaches the model. `voice` is ours and is handled by
+// the picker below, so it is not forwarded twice.
+const passthrough = Object.fromEntries(
+  [...new URLSearchParams(location.search)].filter(([key]) => key !== 'voice'),
+);
+const live = new CallSession({ emit: handle, passthrough });
 const demo = new DemoSession(handle);
 let mode = 'live';
 let controller = live;
