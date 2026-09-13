@@ -13,8 +13,12 @@ export class CallSession {
     audioFactory = (options) => new CallAudio(options),
     socketFactory = (url) => new WebSocket(url),
     clock = () => performance.now(),
-    setTimer = setTimeout,
-    clearTimer = clearTimeout,
+    // Wrapped, not passed bare: these land on the instance and are called as
+    // this.setTimer(...), and browsers throw "Illegal invocation" when a
+    // WebIDL method like setTimeout gets a receiver other than the global.
+    // Node allows it, which is why unit tests alone did not catch this.
+    setTimer = (...args) => setTimeout(...args),
+    clearTimer = (...args) => clearTimeout(...args),
     origin = location.origin,
   } = {}) {
     Object.assign(this, { emit, audioFactory, socketFactory, clock, setTimer, clearTimer, origin });
