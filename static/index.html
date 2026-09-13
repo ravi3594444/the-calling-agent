@@ -1,424 +1,364 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Calling Agent</title>
-<!-- Inline icon: avoids a 404 on /favicon.ico with no extra request. -->
-<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227%22%20fill%3D%22%230b0d10%22%2F%3E%3Crect%20x%3D%2213%22%20y%3D%227%22%20width%3D%226%22%20height%3D%2211%22%20rx%3D%223%22%20fill%3D%22%234ade80%22%2F%3E%3Cpath%20d%3D%22M10%2016a6%206%200%200%200%2012%200M16%2022v3.5%22%20stroke%3D%22%234ade80%22%20stroke-width%3D%222%22%20fill%3D%22none%22%20stroke-linecap%3D%22round%22%2F%3E%3C%2Fsvg%3E">
-<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227%22%20fill%3D%22%230b0d10%22%2F%3E%3Crect%20x%3D%2213%22%20y%3D%227%22%20width%3D%226%22%20height%3D%2211%22%20rx%3D%223%22%20fill%3D%22%234ade80%22%2F%3E%3Cpath%20d%3D%22M10%2016a6%206%200%200%200%2012%200M16%2022v3.5%22%20stroke%3D%22%234ade80%22%20stroke-width%3D%222%22%20fill%3D%22none%22%20stroke-linecap%3D%22round%22%2F%3E%3C%2Fsvg%3E">
-<!-- Added to a phone home screen, this should open chrome-less like an app. -->
-<meta name="theme-color" content="#0b0d10">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Calling Agent">
-<style>
-  :root {
-    --bg: #0b0d10; --panel: #14171c; --line: #232830;
-    --text: #e8ebf0; --muted: #8b95a5; --accent: #4ade80; --danger: #f87171;
-    color-scheme: dark;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
-    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    display: flex; flex-direction: column; align-items: center;
-    /* Centred vertically so the control sits under the thumb on a phone
-       rather than stranded at the top of a tall screen. */
-    justify-content: center;
-    padding: 24px 16px calc(24px + env(safe-area-inset-bottom));
-  }
-  /* Once a transcript exists the stack grows downward from the top instead. */
-  body:has(#log:not(:empty)) { justify-content: flex-start; }
-  h1 { font-size: 19px; font-weight: 600; margin: 8px 0 2px; letter-spacing: -0.01em; }
-  .sub { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
-  /* Once a call is up, the status line says what is happening instead. */
-  body:has(#call[data-state="live"]) .sub,
-  body:has(#call[data-state="connecting"]) .sub { visibility: hidden; }
-  #call {
-    width: 148px; height: 148px; border-radius: 50%; border: none; cursor: pointer;
-    background: var(--accent); color: #06240f; font-size: 16px; font-weight: 650;
-    transition: transform .12s ease, background .2s ease, box-shadow .2s ease;
-    box-shadow: 0 0 0 0 rgba(74, 222, 128, .45);
-  }
-  #call:active { transform: scale(.96); }
-  #call svg { width: 30px; height: 30px; display: block; margin: 0 auto 6px; }
-  #call[data-state="connecting"] svg { display: none; }
-  #call[data-state="live"] { background: var(--danger); color: #2a0808; }
-  #call[data-state="connecting"] { background: #3f4652; color: var(--muted); cursor: wait; }
-  #call[data-state="live"].speaking { animation: pulse 1.4s ease-out infinite; }
-  @keyframes pulse {
-    0%   { box-shadow: 0 0 0 0 rgba(248, 113, 113, .5); }
-    100% { box-shadow: 0 0 0 26px rgba(248, 113, 113, 0); }
-  }
-  #status { margin-top: 20px; font-size: 13px; color: var(--muted); min-height: 20px; text-align: center; }
-  #status.error { color: var(--danger); }
-  #voice-row {
-    display: flex; align-items: center; gap: 10px; margin-top: 22px;
-    font-size: 13px; color: var(--muted);
-  }
-  /* Changing voice mid-call would need a new session, so lock it while live. */
-  body:has(#call[data-state="live"]) #voice-row,
-  body:has(#call[data-state="connecting"]) #voice-row { opacity: .35; pointer-events: none; }
-  #voice {
-    background: var(--panel); color: var(--text); border: 1px solid var(--line);
-    border-radius: 8px; padding: 7px 10px; font: inherit; max-width: 260px;
-  }
-  #log {
-    width: 100%; max-width: 560px; margin-top: 26px; padding: 14px;
-    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-    max-height: 46vh; overflow-y: auto; font-size: 14px;
-  }
-  #log:empty { display: none; }
-  .turn { margin: 0 0 10px; }
-  .turn:last-child { margin-bottom: 0; }
-  .who { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
-  .turn.you .who { color: #7dd3fc; }
-  .turn.agent .who { color: var(--accent); }
-  .partial { opacity: .5; font-style: italic; }
-</style>
-</head>
-<body>
-  <h1>Calling Agent</h1>
-  <div class="sub">Tap to start talking</div>
-  <button id="call" data-state="idle">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9.5" y="3" width="5" height="9"
-      rx="2.5" fill="currentColor"/><path d="M6 11a6 6 0 0 0 12 0M12 17v3.5"
-      stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
-    <span>Start call</span>
-  </button>
-  <div id="status"></div>
-  <label id="voice-row" for="voice">
-    <span>Voice</span>
-    <select id="voice"></select>
-  </label>
-  <div id="log"></div>
-
-<script type="module">
-const SAMPLE_RATE = 24000;
-
-const btn = document.getElementById('call');
-const voiceEl = document.getElementById('voice');
-const statusEl = document.getElementById('status');
-const logEl = document.getElementById('log');
-
-let ws = null, ctx = null, micStream = null, workletNode = null, micSource = null;
-// Playback cursor: the context time at which the next chunk should begin.
-let nextPlayAt = 0;
-let liveSources = new Set();
-let partialEl = null;
-// Held so a reconnect can rejoin the same agent session rather than starting
-// (and separately billing) a new one. The API keeps it alive ~30s.
-let sessionId = null;
-let reconnectAttempt = 0;
-let reconnectTimer = null;
-// A rejected session config fails identically on every retry, so reconnecting
-// just delays the message the user needs to see.
-let fatal = false;
-
-const MAX_RECONNECT_ATTEMPTS = 5;
-// Serverless platforms close a WebSocket when the function hits its duration
-// limit, so a mid-call drop is expected rather than exceptional.
-const RECONNECT_BACKOFF_MS = [500, 1000, 2000, 4000, 8000];
-
-function setStatus(text, isError = false) {
-  statusEl.textContent = text;
-  statusEl.classList.toggle('error', isError);
-}
-
-function addTurn(who, text) {
-  const div = document.createElement('div');
-  div.className = `turn ${who === 'You' ? 'you' : 'agent'}`;
-  div.innerHTML = `<div class="who"></div><div class="text"></div>`;
-  div.querySelector('.who').textContent = who;
-  div.querySelector('.text').textContent = text;
-  logEl.appendChild(div);
-  logEl.scrollTop = logEl.scrollHeight;
-  return div;
-}
-
-/* ---------- base64 <-> PCM16 ---------- */
-
-function pcmToBase64(int16) {
-  const bytes = new Uint8Array(int16.buffer, int16.byteOffset, int16.byteLength);
-  let out = '';
-  // Chunked so we never blow the argument limit on String.fromCharCode.
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    out += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(out);
-}
-
-function base64ToPCM(b64) {
-  const bin = atob(b64);
-  const buf = new ArrayBuffer(bin.length - (bin.length % 2));
-  const bytes = new Uint8Array(buf);
-  for (let i = 0; i < bytes.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new Int16Array(buf);
-}
-
-/* ---------- playback ---------- */
-
-function playChunk(b64) {
-  if (!ctx) return;
-  const pcm = base64ToPCM(b64);
-  if (pcm.length === 0) return;
-
-  const buffer = ctx.createBuffer(1, pcm.length, SAMPLE_RATE);
-  const out = buffer.getChannelData(0);
-  for (let i = 0; i < pcm.length; i++) out[i] = pcm[i] / 0x8000;
-
-  const src = ctx.createBufferSource();
-  src.buffer = buffer;
-  src.connect(ctx.destination);
-
-  // Schedule back-to-back. If we have fallen behind (network hiccup), restart
-  // the cursor at now, with a small cushion to absorb jitter.
-  const now = ctx.currentTime;
-  // Cushion absorbs network jitter but is added latency on every reply, so
-  // keep it small; raise it if playback stutters on a poor connection.
-  if (nextPlayAt < now) nextPlayAt = now + 0.02;
-  src.start(nextPlayAt);
-  nextPlayAt += buffer.duration;
-
-  liveSources.add(src);
-  src.onended = () => liveSources.delete(src);
-}
-
-function stopPlayback() {
-  for (const src of liveSources) {
-    try { src.stop(); } catch { /* already ended */ }
-  }
-  liveSources.clear();
-  nextPlayAt = 0;
-  btn.classList.remove('speaking');
-}
-
-/* ---------- server events ---------- */
-
-function handleEvent(ev) {
-  switch (ev.type) {
-    case 'session.ready':
-      if (ev.session_id) sessionId = ev.session_id;
-      reconnectAttempt = 0;
-      setStatus('Connected — go ahead and speak');
-      break;
-    case 'reply.started':
-      btn.classList.add('speaking');
-      break;
-    case 'reply.done':
-      btn.classList.remove('speaking');
-      break;
-    case 'transcript.user.delta':
-      if (!partialEl) partialEl = addTurn('You', '');
-      partialEl.querySelector('.text').textContent = ev.text || ev.transcript || '';
-      partialEl.querySelector('.text').classList.add('partial');
-      break;
-    case 'transcript.user':
-      if (partialEl) { partialEl.remove(); partialEl = null; }
-      addTurn('You', ev.text || ev.transcript || '');
-      break;
-    case 'transcript.agent':
-      addTurn('Agent', ev.text || ev.transcript || '');
-      break;
-    case 'session.error':
-      setStatus(`Agent error: ${ev.message || 'unknown'}`, true);
-      break;
-    case 'error':
-      fatal = true;
-      setStatus(ev.message || 'Server error', true);
-      break;
-    case 'notice':
-      // Something optional was rejected but the call is up; not an error.
-      setStatus(ev.message || '');
-      break;
-  }
-}
-
-/* ---------- socket lifecycle ---------- */
-
-function connectSocket() {
-  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-  const params = new URLSearchParams();
-  // Resuming is the client's job: on a serverless platform the instance that
-  // started the call is not the one handling the reconnect, so there is no
-  // server-side memory to look the session up in.
-  if (sessionId) params.set('resume', sessionId);
-  else if (voiceEl.value) params.set('voice', voiceEl.value);
-  const query = params.toString() ? `?${params}` : '';
-  const socket = new WebSocket(`${scheme}://${location.host}/ws${query}`);
-  ws = socket;
-
-  socket.onmessage = (e) => {
-    const msg = JSON.parse(e.data);
-    if (msg.type === 'audio') playChunk(msg.data);
-    else if (msg.type === 'clear') stopPlayback();   // barge-in
-    else if (msg.type === 'event') handleEvent(msg.event);
-  };
-
-  socket.onclose = () => {
-    // Only react if this is still the live socket and the user has not hung up.
-    if (socket !== ws || btn.dataset.state !== 'live') return;
-    scheduleReconnect();
-  };
-
-  return new Promise((resolve, reject) => {
-    socket.onopen = resolve;
-    socket.onerror = () => reject(new Error('WebSocket connection failed'));
-  });
-}
-
-function scheduleReconnect() {
-  if (fatal) {
-    // The status line already carries the reason; keep it on screen.
-    endCall(statusEl.textContent, true);
-    return;
-  }
-  if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
-    endCall('Connection lost. Tap to start again.', true);
-    return;
-  }
-  const delay = RECONNECT_BACKOFF_MS[reconnectAttempt];
-  reconnectAttempt += 1;
-
-  // Queued playback belongs to a dead socket; dropping it avoids a stale
-  // fragment playing after we reconnect.
-  stopPlayback();
-  setStatus(`Reconnecting… (${reconnectAttempt}/${MAX_RECONNECT_ATTEMPTS})`);
-
-  reconnectTimer = setTimeout(async () => {
-    if (btn.dataset.state !== 'live') return;
-    try {
-      await connectSocket();
-      setStatus('Reconnected — keep going');
-    } catch {
-      scheduleReconnect();
-    }
-  }, delay);
-}
-
-/* ---------- call lifecycle ---------- */
-
-async function startCall() {
-  fatal = false;
-  btn.dataset.state = 'connecting';
-  btn.querySelector('span').textContent = 'Connecting';
-  setStatus('Requesting microphone…');
-
-  try {
-    // Must run inside the click handler's task: iOS Safari and desktop
-    // autoplay policy both require a user gesture before the AudioContext
-    // will leave the suspended state or the mic prompt will appear.
-    micStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,   // speaker bleed would otherwise be
-        noiseSuppression: true,   // transcribed as the user speaking
-        autoGainControl: true,
-        channelCount: 1,
-      },
-    });
-
-    ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
-    await ctx.resume();
-    await ctx.audioWorklet.addModule('/static/pcm-worklet.js');
-
-    setStatus('Connecting to agent…');
-    await connectSocket();
-
-    micSource = ctx.createMediaStreamSource(micStream);
-    workletNode = new AudioWorkletNode(ctx, 'pcm-capture', {
-      numberOfOutputs: 0,
-      processorOptions: { inputRate: ctx.sampleRate },
-    });
-    workletNode.port.onmessage = (e) => {
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'audio', data: pcmToBase64(e.data) }));
-      }
-    };
-    micSource.connect(workletNode);
-
-    btn.dataset.state = 'live';
-    btn.querySelector('span').textContent = 'End call';
-    setStatus('Listening…');
-  } catch (err) {
-    const msg = err.name === 'NotAllowedError'
-      ? 'Microphone permission denied. Allow it and try again.'
-      : (err.message || String(err));
-    endCall(msg, true);
-  }
-}
-
-function endCall(message = 'Call ended', isError = false) {
-  clearTimeout(reconnectTimer);
-  reconnectTimer = null;
-  reconnectAttempt = 0;
-  sessionId = null;
-  stopPlayback();
-  workletNode?.port.close();
-  micSource?.disconnect();
-  workletNode?.disconnect();
-  micStream?.getTracks().forEach((t) => t.stop());
-  if (ws && ws.readyState <= WebSocket.OPEN) ws.close();
-  ctx?.close();
-  ws = micStream = workletNode = micSource = ctx = null;
-  partialEl = null;
-
-  btn.dataset.state = 'idle';
-  btn.querySelector('span').textContent = 'Start call';
-  setStatus(message, isError);
-}
-
-btn.addEventListener('click', () => {
-  if (btn.dataset.state === 'idle') startCall();
-  else if (btn.dataset.state === 'live') endCall();
-});
-
-async function loadVoices() {
-  try {
-    const { current, known } = await (await fetch('/voices')).json();
-    let saved = null;
-    try { saved = localStorage.getItem('voice'); } catch { /* private mode */ }
-    const chosen = saved || current;
-
-    voiceEl.innerHTML = '';
-    for (const [id, description] of Object.entries(known)) {
-      const opt = document.createElement('option');
-      opt.value = id;
-      opt.textContent = `${id} — ${description}`;
-      if (id === chosen) opt.selected = true;
-      voiceEl.appendChild(opt);
-    }
-    // Keep a configured voice selectable even when it is not in the list.
-    if (!(chosen in known)) {
-      const opt = document.createElement('option');
-      opt.value = chosen;
-      opt.textContent = chosen;
-      opt.selected = true;
-      voiceEl.prepend(opt);
-    }
-  } catch {
-    document.getElementById('voice-row').hidden = true;
-  }
-}
-
-voiceEl.addEventListener('change', () => {
-  try { localStorage.setItem('voice', voiceEl.value); } catch { /* ignore */ }
-  setStatus(`Voice set to ${voiceEl.value}. Start a call to hear it.`);
-});
-
-loadVoices();
-
-if (!navigator.mediaDevices?.getUserMedia) {
-  // getUserMedia is unavailable on insecure origins, which is the usual cause.
-  btn.disabled = true;
-  setStatus(
-    location.protocol === 'https:' || location.hostname === 'localhost'
-      ? 'This browser does not support microphone capture.'
-      : 'Microphone needs HTTPS. Open this page over https:// or on localhost.',
-    true,
-  );
-}
-</script>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="theme-color" content="#101311" />
+    <meta
+      name="description"
+      content="Tableline is a restaurant voice concierge. Talk naturally, find a table, explore the menu, and leave with a reservation."
+    />
+    <title>Tableline — A warm welcome. Every call.</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="modulepreload" href="/static/js/audio.js" />
+    <!-- The audio module loads /static/pcm-worklet.js after a user gesture. -->
+    <script type="module" src="/static/js/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">Skip to call workspace</a>
+    <svg class="icon-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <symbol id="i-phone" viewBox="0 0 24 24">
+        <path d="m8 3 3 5-3 3c1.3 2.3 2.7 3.7 5 5l3-3 5 3-1 4c-1 3-9-1-12-4S1 5 4 4Z" />
+      </symbol>
+      <symbol id="i-mic" viewBox="0 0 24 24">
+        <rect x="9" y="3" width="6" height="11" rx="3" />
+        <path d="M5 11a7 7 0 0 0 14 0M12 18v3m-3 0h6" />
+      </symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6" /></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></symbol>
+      <symbol id="i-calendar" viewBox="0 0 24 24">
+        <rect x="3" y="5" width="18" height="16" rx="3" />
+        <path d="M7 3v5m10-5v5M3 11h18m-13 5h3" />
+      </symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24">
+        <path
+          d="M4 4h6a3 3 0 0 1 3 3v14a4 4 0 0 0-4-2H4Zm16 0h-4a3 3 0 0 0-3 3v14a4 4 0 0 1 4-2h3Z"
+        />
+      </symbol>
+      <symbol id="i-info" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 11v6m0-10v1" />
+      </symbol>
+      <symbol id="i-download" viewBox="0 0 24 24">
+        <path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5" />
+      </symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6" /></symbol>
+      <symbol id="i-volume" viewBox="0 0 24 24">
+        <path d="m11 4-6 5H2v6h3l6 5Zm4 4a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14" />
+      </symbol>
+      <symbol id="i-wave" viewBox="0 0 24 24">
+        <path d="M4 10v4m4-8v12m4-15v18m4-15v12m4-8v4" />
+      </symbol>
+    </svg>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Tableline home"
+        ><span class="brand-mark"><i></i><i></i><i></i><i></i></span>tableline<span
+          class="brand-period"
+          >.</span
+        ></a
+      >
+      <nav aria-label="Main navigation">
+        <a href="#workspace" class="nav-active">Call studio</a
+        ><a href="#how-it-works">The experience</a
+        ><button class="text-button" data-open-guide>
+          Demo guide <span aria-hidden="true">↗</span>
+        </button>
+      </nav>
+      <span class="header-label"><span class="dot"></span> Built for hospitality</span>
+    </header>
+    <main>
+      <section class="intro" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">
+            <span class="small-line"></span> YOUR NEXT GREAT HOST IS ALWAYS HERE
+          </p>
+          <h1 id="page-title">
+            Busy tables.<br class="mobile-break" />
+            <span>Never a missed welcome.</span>
+          </h1>
+          <p class="intro-copy">
+            Let your team take care of the room. Your AI host takes care of the call.
+          </p>
+        </div>
+        <div class="intro-note">
+          <span class="note-icon"
+            ><svg><use href="#i-wave" /></svg
+          ></span>
+          <p>Natural conversation.<br /><strong>A reservation, handled.</strong></p>
+        </div>
+      </section>
+      <section class="workspace" id="workspace" aria-label="Call studio">
+        <div class="call-panel" id="call-panel" data-phase="idle">
+          <div class="panel-top">
+            <div class="venue-mark">CK</div>
+            <div>
+              <span class="overline">YOU'RE CALLING</span>
+              <h2 id="venue">The Copper Kettle</h2>
+            </div>
+            <span class="status-pill" id="connection"
+              ><span class="dot"></span><span id="connection-label">Checking setup</span></span
+            >
+          </div>
+          <div class="mode-switch" role="group" aria-label="Call mode">
+            <button id="mode-live" aria-pressed="true">Live conversation</button
+            ><button id="mode-demo" aria-pressed="false">
+              Interactive demo <span class="small-tag">NO MIC</span>
+            </button>
+          </div>
+          <div id="demo-notice" class="demo-notice" hidden>
+            Scripted walkthrough · no microphone · no real reservation
+          </div>
+          <div class="agent-stage">
+            <div class="orbit-label orbit-label-left">
+              <span class="cross">+</span> A LITTLE MORE HUMAN
+            </div>
+            <div class="voice-orb" id="voice-orb" aria-hidden="true">
+              <div class="orb-atmosphere"></div>
+              <canvas id="orb"></canvas
+              ><span class="orb-core"
+                ><svg><use href="#i-wave" /></svg
+              ></span>
+            </div>
+            <div class="orbit-label orbit-label-right">
+              VOICE, WITH PURPOSE <span class="cross">+</span>
+            </div>
+          </div>
+          <div class="agent-caption">
+            <div class="agent-name">Meet your AI host <span class="ai-label">AI</span></div>
+            <h3 id="phase-title">Good conversations start here.</h3>
+            <p id="status" role="status" aria-live="polite">
+              Ask for a table, explore the menu, or plan your visit.
+            </p>
+          </div>
+          <div class="call-controls">
+            <button
+              class="round-button"
+              id="mute"
+              aria-label="Mute microphone"
+              aria-pressed="false"
+              title="Mute microphone"
+              disabled
+            >
+              <svg><use href="#i-mic" /></svg><span class="slash"></span>
+            </button>
+            <button id="call" class="call-button" data-state="idle">
+              <svg><use href="#i-phone" /></svg><span>Start conversation</span><kbd>↵</kbd>
+            </button>
+            <button
+              class="round-button"
+              id="sound"
+              aria-label="Mute agent audio"
+              aria-pressed="false"
+              title="Mute agent audio"
+            >
+              <svg><use href="#i-volume" /></svg><span class="slash"></span>
+            </button>
+          </div>
+          <div class="voice-row">
+            <label for="voice">Host voice</label
+            ><select id="voice">
+              <option value="arjun">Arjun · Hindi / English</option></select
+            ><span class="voice-divider"></span
+            ><span id="mic-note">Microphone on only during a call</span>
+          </div>
+          <div class="call-metrics">
+            <div>
+              <span class="metric-label">CALL DURATION</span><strong id="duration">00:00</strong>
+            </div>
+            <div>
+              <span class="metric-label"
+                >REPLY WAIT
+                <button
+                  class="info-button"
+                  id="timing-info"
+                  aria-label="How reply wait is measured"
+                >
+                  <svg><use href="#i-info" /></svg></button></span
+              ><strong id="latency">—<span> ms</span></strong>
+            </div>
+            <div>
+              <span class="metric-label">YOUR TURNS</span><strong id="turn-count">00</strong>
+            </div>
+          </div>
+        </div>
+        <aside class="conversation-panel" aria-label="Conversation and outcomes">
+          <div class="conversation-heading">
+            <h2>Conversation</h2>
+            <span class="transcript-tag" id="transcript-tag">LIVE TRANSCRIPT</span>
+          </div>
+          <div class="transcript-area" id="transcript-area">
+            <div class="transcript-empty" id="transcript-empty">
+              <span class="empty-icon"
+                ><svg><use href="#i-wave" /></svg
+              ></span>
+              <h3>Every word, right here.</h3>
+              <p>Your conversation appears as you speak.<br />Start with something like…</p>
+              <div class="prompt-list">
+                <button data-scenario="booking">
+                  <span>“A table for four tomorrow at 7?”</span
+                  ><svg><use href="#i-arrow" /></svg></button
+                ><button data-scenario="menu">
+                  <span>“What’s good for vegetarians?”</span
+                  ><svg><use href="#i-arrow" /></svg></button
+                ><button data-scenario="hours">
+                  <span>“What time do you close?”</span><svg><use href="#i-arrow" /></svg>
+                </button>
+              </div>
+              <span class="empty-note">Pick a prompt to explore the demo</span>
+            </div>
+            <div
+              id="log"
+              role="log"
+              aria-label="Call transcript"
+              aria-live="polite"
+              aria-relevant="additions text"
+            ></div>
+            <button class="latest-button" id="latest" hidden>↓ Back to latest</button>
+          </div>
+          <div
+            class="demo-replies"
+            id="demo-replies"
+            role="group"
+            aria-label="Demo replies"
+            hidden
+          ></div>
+          <div class="outcome" id="outcome" aria-live="polite">
+            <span class="outcome-icon"
+              ><svg><use href="#i-calendar" /></svg
+            ></span>
+            <div>
+              <span class="overline">FROM CONVERSATION TO CONFIRMATION</span>
+              <h3 id="outcome-title">A table. A time. All taken care of.</h3>
+              <p id="outcome-copy">Reservation details appear here when confirmed.</p>
+            </div>
+            <div id="receipt" hidden></div>
+          </div>
+          <div class="conversation-footer">
+            <span id="session-note">This app keeps transcripts in this tab</span
+            ><button id="export" class="text-button" disabled>
+              <svg><use href="#i-download" /></svg> Export call
+            </button>
+          </div>
+        </aside>
+      </section>
+      <section class="value-strip" id="how-it-works" aria-label="The experience">
+        <div class="value-intro">
+          <p class="eyebrow">LESS HOLD MUSIC.<br />MORE HOSPITALITY.</p>
+          <h2>One conversation.<br />Three things off your plate.</h2>
+        </div>
+        <article>
+          <span class="feature-icon"
+            ><svg><use href="#i-calendar" /></svg
+          ></span>
+          <h3>Fill tables, effortlessly.</h3>
+          <p>Checks availability, confirms the details, and returns a booking reference.</p>
+          <span class="feature-tag">Reservations, handled</span>
+        </article>
+        <article>
+          <span class="feature-icon"
+            ><svg><use href="#i-menu" /></svg
+          ></span>
+          <h3>Know the menu by heart.</h3>
+          <p>Answers from the menu, with prices, dietary preferences, and dish details.</p>
+          <span class="feature-tag">Answers with context</span>
+        </article>
+        <article>
+          <span class="feature-icon"
+            ><svg><use href="#i-wave" /></svg
+          ></span>
+          <h3>Keep it conversational.</h3>
+          <p>Speak naturally. Change your mind. Interrupt when you need to.</p>
+          <span class="feature-tag">Your pace, your language</span>
+        </article>
+      </section>
+      <footer class="site-footer">
+        <span>tableline. <span class="footer-muted">A warm welcome. Every call.</span></span
+        ><button class="text-button" data-open-guide>
+          Inside the demo <span aria-hidden="true">↗</span>
+        </button>
+      </footer>
+    </main>
+    <dialog id="guide" aria-labelledby="guide-title">
+      <button class="round-button dialog-close" data-close-dialog aria-label="Close demo guide">
+        <svg><use href="#i-close" /></svg>
+      </button>
+      <p class="eyebrow">A SMALL TEAM'S EXTRA PAIR OF HANDS</p>
+      <h2 id="guide-title">Hospitality shouldn't<br />come with a hold queue.</h2>
+      <p>
+        When a restaurant is busy, the phone competes with the people in the room. Tableline gives
+        callers a voice host that can answer questions and take reservations.
+      </p>
+      <ol class="guide-steps">
+        <li>
+          <span>01</span>
+          <div>
+            <strong>Make the ask.</strong>
+            <p>Try a table for four tomorrow at 7. The host checks the actual reservation tool.</p>
+          </div>
+        </li>
+        <li>
+          <span>02</span>
+          <div>
+            <strong>Change your mind.</strong>
+            <p>
+              Interrupt the host or ask about vegetarian dishes. Watch the transcript and action
+              results.
+            </p>
+          </div>
+        </li>
+        <li>
+          <span>03</span>
+          <div>
+            <strong>Leave with an outcome.</strong>
+            <p>Agree to the booking. Your confirmation appears beside the conversation.</p>
+          </div>
+        </li>
+      </ol>
+      <div class="guide-note">
+        <strong>Choose your demo mode</strong>
+        <p>
+          <b>Live conversation</b> connects your microphone to AssemblyAI through this server. The
+          provider processes audio and may retain session recordings and transcripts.
+        </p>
+        <p>
+          <b>Interactive demo</b> is a scripted walkthrough with simulated actions. It never opens
+          your microphone, contacts the voice API, or creates a reservation.
+        </p>
+        <p>
+          This prototype runs browser calls; it is not connected to a telephone number. This build
+          uses an in-memory reservation store. Live bookings last only for the server process and
+          are not shared between instances.
+        </p>
+      </div>
+      <button class="call-button guide-start" id="guide-start">
+        Explore the interactive demo <svg><use href="#i-arrow" /></svg>
+      </button>
+    </dialog>
+    <dialog id="timing-dialog" aria-labelledby="timing-title">
+      <button
+        class="round-button dialog-close"
+        data-close-dialog
+        aria-label="Close timing explanation"
+      >
+        <svg><use href="#i-close" /></svg>
+      </button>
+      <p class="eyebrow">A MEASUREMENT, NOT A PROMISE</p>
+      <h2 id="timing-title">What “reply wait” means.</h2>
+      <p>
+        Measured in your browser from receiving the speech-stopped event to scheduling the first
+        reply audio for playback. It includes the playback cushion, but excludes speech detection
+        before that event and device output latency.
+      </p>
+      <p>
+        The number is the latest measured reply, not a full end-to-end benchmark. Interactive demo
+        timing is never reported as live latency.
+      </p>
+    </dialog>
+    <noscript
+      ><p class="noscript">
+        Enable JavaScript to use voice calls and the interactive demo.
+      </p></noscript
+    >
+  </body>
 </html>

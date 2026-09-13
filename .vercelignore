@@ -13,3 +13,9 @@ Makefile
 .env
 .env.*
 !.env.example
+
+# Browser tests are development-only
+node_modules
+package.json
+package-lock.json
+.prettierrc.json

@@ -13,3 +13,9 @@ infra
 !.env.example
 caddy_data
 caddy_config
+
+# Browser tests are development-only
+node_modules
+package.json
+package-lock.json
+.prettierrc.json

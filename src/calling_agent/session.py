@@ -8,6 +8,7 @@ LLM and TTS work happens upstream.
 import asyncio
 import json
 import logging
+from time import perf_counter
 
 import websockets
 from websockets.asyncio.client import ClientConnection
@@ -56,6 +57,10 @@ class AgentSession:
         self._pending_tool_results: list[dict] = []
         self._reply_active = False
         self._flush_guard: asyncio.Task | None = None
+        # One ordered worker owns tool execution. Awaiting a threaded tool in
+        # the audio reader still blocks that reader; a separate queue does not.
+        self._tool_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=16)
+        self._tool_cache: dict[str, dict] = {}
 
     async def run(self) -> None:
         """Open the upstream connection and pump audio until either side ends."""
@@ -63,6 +68,7 @@ class AgentSession:
             await self._transport.send_event(
                 {"type": "error", "message": "ASSEMBLYAI_API_KEY is not set on the server."}
             )
+            await self._transport.close()
             return
 
         try:
@@ -89,9 +95,7 @@ class AgentSession:
                     if dropped
                     else None
                 )
-                refused = await self._attempt(
-                    tune_turns=tune_turns, voice=voice, report_close=last
-                )
+                refused = await self._attempt(tune_turns=tune_turns, voice=voice, report_close=last)
                 if not refused or last:
                     return
         except websockets.InvalidStatus as exc:
@@ -111,7 +115,7 @@ class AgentSession:
         except OSError as exc:
             log.error("could not reach upstream: %s", exc)
             await self._transport.send_event(
-                {"type": "error", "message": f"Could not reach AssemblyAI: {exc}"}
+                {"type": "error", "fatal": False, "message": f"Could not reach AssemblyAI: {exc}"}
             )
         finally:
             await self._transport.close()
@@ -129,6 +133,7 @@ class AgentSession:
             settings.assemblyai_agent_ws_url,
             additional_headers={"Authorization": f"Bearer {settings.assemblyai_api_key}"},
             max_size=None,
+            open_timeout=10,
         ) as upstream:
             if self._resume_session_id:
                 opening = build_session_resume(self._resume_session_id)
@@ -157,13 +162,24 @@ class AgentSession:
         """Run both directions concurrently; stop as soon as either finishes."""
         up = asyncio.create_task(self._client_to_agent(upstream), name="client->agent")
         down = asyncio.create_task(self._agent_to_client(upstream), name="agent->client")
-        done, pending = await asyncio.wait({up, down}, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        for task in done:
-            if (exc := task.exception()) is not None:
-                log.error("%s failed: %s", task.get_name(), exc)
+        worker = asyncio.create_task(self._run_tools(upstream), name="tools")
+        tasks = {up, down, worker}
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                if not task.cancelled() and (exc := task.exception()) is not None:
+                    log.error("%s failed: %s", task.get_name(), exc)
+        finally:
+            # No guard or worker may send into a closed/replaced upstream.
+            if self._flush_guard is not None:
+                tasks.add(self._flush_guard)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._flush_guard = None
+            self._pending_tool_results.clear()
+            self._reply_active = False
+            self._tool_queue = asyncio.Queue(maxsize=16)
 
         if report_close:
             await self._report_close(upstream)
@@ -193,13 +209,13 @@ class AgentSession:
         else:
             message = f"Agent connection closed unexpectedly (code {code}). {reason}".strip()
 
-        await self._transport.send_event({"type": "error", "code": code, "message": message})
+        await self._transport.send_event(
+            {"type": "error", "code": code, "fatal": code == 1008, "message": message}
+        )
 
     async def _client_to_agent(self, upstream: ClientConnection) -> None:
         async for chunk_b64 in self._transport.recv_audio():
-            await upstream.send(
-                json.dumps({"type": p.INPUT_AUDIO, p.INPUT_AUDIO_FIELD: chunk_b64})
-            )
+            await upstream.send(json.dumps({"type": p.INPUT_AUDIO, p.INPUT_AUDIO_FIELD: chunk_b64}))
 
     async def _agent_to_client(self, upstream: ClientConnection) -> None:
         async for raw in upstream:
@@ -251,7 +267,18 @@ class AgentSession:
                 self._pending_notice = None
 
         elif kind == p.TOOL_CALL:
-            await self._handle_tool_call(upstream, msg)
+            # Keep consuming audio/interruptions while tools are running.
+            try:
+                self._tool_queue.put_nowait(msg)
+            except asyncio.QueueFull:
+                await self._transport.send_event(
+                    {
+                        "type": "error",
+                        "message": "Too many pending actions. Please start a new call.",
+                    }
+                )
+                raise RuntimeError("tool queue full") from None
+            return
 
         elif kind == p.SESSION_ERROR:
             log.error(
@@ -264,22 +291,55 @@ class AgentSession:
         # and connection state.
         await self._transport.send_event(msg)
 
+    async def _run_tools(self, upstream: ClientConnection) -> None:
+        while True:
+            msg = await self._tool_queue.get()
+            try:
+                await self._handle_tool_call(upstream, msg)
+            finally:
+                self._tool_queue.task_done()
+
     async def _handle_tool_call(self, upstream: ClientConnection, msg: dict) -> None:
         name = msg.get("name", "")
         args = msg.get("arguments") or {}
-        result, is_error = await asyncio.to_thread(run_tool, name, args)
-        log.info("tool %s -> %s%s", name, result, " (error)" if is_error else "")
+        call_id = msg.get("call_id")
+        cached = self._tool_cache.get(call_id) if call_id else None
+        if cached is not None:
+            self._pending_tool_results.append(cached)
+        else:
+            await self._transport.send_event(
+                {"type": "tool.activity", "status": "started", "name": name, "call_id": call_id}
+            )
+            started = perf_counter()
+            result, is_error = await asyncio.to_thread(run_tool, name, args)
+            elapsed_ms = round((perf_counter() - started) * 1000)
+            # Do not put caller names, phone numbers or booking notes in logs.
+            log.info("tool %s completed in %dms (error=%s)", name, elapsed_ms, is_error)
 
-        self._pending_tool_results.append(
-            {
+            payload = {
                 "type": p.TOOL_RESULT,
-                # The API pairs results by call_id; a wrong key leaves the
-                # agent waiting on a tool that already ran.
-                "call_id": msg.get("call_id"),
+                "call_id": call_id,
                 "result": result,
                 "is_error": is_error,
             }
-        )
+            self._pending_tool_results.append(payload)
+            if call_id:
+                self._tool_cache[call_id] = payload
+            # UI evidence comes from the executed tool, never a transcript guess.
+            activity = {
+                "type": "tool.activity",
+                "status": "error" if is_error else "completed",
+                "name": name,
+                "call_id": call_id,
+                "result": str(result),
+                "duration_ms": elapsed_ms,
+            }
+            if receipt := getattr(result, "receipt", None):
+                activity["receipt"] = receipt
+            # Flush ready results before announcing completion to the browser.
+            if not self._reply_active:
+                await self._flush_tool_results(upstream)
+            await self._transport.send_event(activity)
 
         if not self._reply_active:
             # No reply in progress to wait for -- send straight away, or the
@@ -295,15 +355,20 @@ class AgentSession:
     async def _flush_after_timeout(self, upstream: ClientConnection) -> None:
         await asyncio.sleep(TOOL_RESULT_TIMEOUT)
         if self._pending_tool_results:
-            log.warning("no reply.done within %ss; sending tool results anyway",
-                        TOOL_RESULT_TIMEOUT)
+            log.warning(
+                "no reply.done within %ss; sending tool results anyway", TOOL_RESULT_TIMEOUT
+            )
             await self._flush_tool_results(upstream)
 
     async def _flush_tool_results(self, upstream: ClientConnection) -> None:
         if not self._pending_tool_results:
             return
         queued, self._pending_tool_results = self._pending_tool_results, []
-        if self._flush_guard is not None and not self._flush_guard.done():
+        if (
+            self._flush_guard is not None
+            and not self._flush_guard.done()
+            and self._flush_guard is not asyncio.current_task()
+        ):
             self._flush_guard.cancel()
         for payload in queued:
             await upstream.send(json.dumps(payload))

@@ -45,6 +45,18 @@ async def voices() -> dict:
     return {"current": settings.agent_voice, "known": KNOWN_VOICES}
 
 
+@app.get("/experience")
+async def experience() -> dict:
+    """Public product context, with no secrets and no billable upstream call."""
+    return {
+        "restaurant": settings.restaurant_name,
+        "cuisine": settings.restaurant_cuisine,
+        "live_configured": bool(settings.assemblyai_api_key),
+        "booking_storage": "memory",
+        "interruptions": settings.allow_interruptions,
+    }
+
+
 @app.get("/diagnose")
 async def diagnose() -> dict:
     """Walk the real call path upstream and report which step fails.
@@ -70,9 +82,7 @@ async def favicon() -> FileResponse:
 
 
 @app.websocket("/ws")
-async def ws(
-    websocket: WebSocket, resume: str | None = None, voice: str | None = None
-) -> None:
+async def ws(websocket: WebSocket, resume: str | None = None, voice: str | None = None) -> None:
     """Bridge one browser to one agent session.
 
     `resume` carries a session id the client saw earlier. The client holds it
@@ -86,9 +96,7 @@ async def ws(
     await websocket.accept()
     client = websocket.client.host if websocket.client else "unknown"
     log.info("browser connected from %s%s", client, " (resuming)" if resume else "")
-    await AgentSession(
-        BrowserTransport(websocket), resume_session_id=resume, voice=voice
-    ).run()
+    await AgentSession(BrowserTransport(websocket), resume_session_id=resume, voice=voice).run()
     log.info("session for %s ended", client)
 
 

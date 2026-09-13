@@ -1,4 +1,4 @@
-.PHONY: help install dev test lint fmt docker-build docker-up deploy-up logs
+.PHONY: help install dev test test-ui lint fmt docker-build docker-up deploy-up logs
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s "$$(printf '\t')"
@@ -11,6 +11,9 @@ dev:  ## Run with auto-reload on http://localhost:8080
 
 test:  ## Run the test suite
 	.venv/bin/pytest tests/ -q
+
+test-ui:  ## Run client lifecycle and DOM interaction tests (npm ci first)
+	npm test
 
 lint:  ## Lint
 	.venv/bin/ruff check src tests

@@ -13,6 +13,7 @@ import random
 import string
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
+from threading import RLock
 from typing import Any
 
 from .config import settings
@@ -49,24 +50,42 @@ class Booking:
     cancelled: bool = False
 
 
+class BookingResult(str):
+    """Keep spoken tool responses compatible, with a structured UI receipt."""
+
+    def __new__(cls, text: str, booking: Booking):
+        result = super().__new__(cls, text)
+        result.receipt = {
+            "reference": booking.reference,
+            "name": booking.name,
+            "party_size": booking.party_size,
+            "date": booking.at.date().isoformat(),
+            "time": booking.at.strftime("%H:%M"),
+            "status": "cancelled" if booking.cancelled else "confirmed",
+        }
+        return result
+
+
 @dataclass
 class BookingStore:
     """In-memory reservation book. Replace with a database for real use."""
 
     bookings: dict[str, Booking] = field(default_factory=dict)
+    lock: Any = field(default_factory=RLock, repr=False)
 
     def seats_taken(self, at: datetime) -> int:
-        return sum(
-            b.party_size
-            for b in self.bookings.values()
-            if not b.cancelled and b.at == at
-        )
+        with self.lock:
+            return sum(
+                b.party_size for b in self.bookings.values() if not b.cancelled and b.at == at
+            )
 
     def add(self, booking: Booking) -> None:
-        self.bookings[booking.reference] = booking
+        with self.lock:
+            self.bookings[booking.reference] = booking
 
     def get(self, reference: str) -> Booking | None:
-        return self.bookings.get(reference.strip().upper())
+        with self.lock:
+            return self.bookings.get(reference.strip().upper())
 
 
 BOOKINGS = BookingStore()
@@ -172,6 +191,13 @@ def check_availability(args: dict[str, Any]) -> str:
 
 
 def book_table(args: dict[str, Any]) -> str:
+    # Calls use separate workers. Keep capacity check + insert atomic across
+    # sessions in this process, so simultaneous callers cannot overbook a slot.
+    with BOOKINGS.lock:
+        return _book_table(args)
+
+
+def _book_table(args: dict[str, Any]) -> str:
     name = str(args.get("name", "")).strip()
     day = str(args.get("date", ""))
     at = str(args.get("time", ""))
@@ -207,7 +233,7 @@ def book_table(args: dict[str, Any]) -> str:
     )
     if notes:
         confirmation += f" Noted: {notes}."
-    return confirmation
+    return BookingResult(confirmation, booking)
 
 
 def lookup_booking(args: dict[str, Any]) -> str:
@@ -216,9 +242,10 @@ def lookup_booking(args: dict[str, Any]) -> str:
         return "I cannot find a booking with that reference."
     if booking.cancelled:
         return f"That booking for {booking.name} was cancelled."
-    return (
+    return BookingResult(
         f"{booking.party_size} for {booking.name}, {_spoken(booking.at)}."
-        + (f" Noted: {booking.notes}." if booking.notes else "")
+        + (f" Noted: {booking.notes}." if booking.notes else ""),
+        booking,
     )
 
 
@@ -229,7 +256,9 @@ def cancel_booking(args: dict[str, Any]) -> str:
     if booking.cancelled:
         return "That one was already cancelled."
     booking.cancelled = True
-    return f"Cancelled: {booking.party_size} for {booking.name}, {_spoken(booking.at)}."
+    return BookingResult(
+        f"Cancelled: {booking.party_size} for {booking.name}, {_spoken(booking.at)}.", booking
+    )
 
 
 def restaurant_info(_args: dict[str, Any]) -> str:
@@ -296,9 +325,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": "Read back an existing reservation from its reference code.",
         "parameters": {
             "type": "object",
-            "properties": {
-                "reference": {"type": "string", "description": "Five-character code."}
-            },
+            "properties": {"reference": {"type": "string", "description": "Five-character code."}},
             "required": ["reference"],
         },
     },
@@ -308,9 +335,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": "Cancel a reservation by its reference code.",
         "parameters": {
             "type": "object",
-            "properties": {
-                "reference": {"type": "string", "description": "Five-character code."}
-            },
+            "properties": {"reference": {"type": "string", "description": "Five-character code."}},
             "required": ["reference"],
         },
     },
