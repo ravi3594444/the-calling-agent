@@ -1,7 +1,16 @@
-# the-calling-agent
+# Tableline · the-calling-agent
 
-A real-time voice agent you talk to in a browser. Open a link on your phone,
-tap once, and speak to it.
+A restaurant voice concierge with a complete call workspace. Keep the team focused
+on guests while the AI host handles browser conversations about reservations,
+menu questions, and visiting the restaurant.
+
+The interface includes an audio-reactive visual, live transcript, restaurant action
+results, reservation receipts, mute controls, reconnect states, and an explicit
+transcript export. A separately labeled interactive demo works without a microphone
+or API key.
+
+See [the hackathon demo guide](docs/HACKATHON.md) and
+[the architecture](docs/ARCHITECTURE.md) for the implementation and its limits.
 
 It currently answers the phone for a restaurant and takes table reservations:
 it checks availability, books, looks bookings up, and cancels them.
@@ -30,7 +39,7 @@ cp .env.example .env              # then put your ASSEMBLYAI_API_KEY in it
 make dev                          # http://localhost:8080
 ```
 
-Open <http://localhost:8080> and tap **Start call**.
+Open <http://localhost:8080> and tap **Start conversation**.
 
 `localhost` is the one origin browsers exempt from the HTTPS requirement for
 microphone access. Anywhere else you need a real certificate — see
@@ -49,7 +58,7 @@ synthesis all happen upstream.
 | Relay + tool dispatch | `src/calling_agent/session.py` |
 | Protocol message names | `src/calling_agent/protocol.py` |
 | Audio transport interface | `src/calling_agent/transport/` |
-| Browser client | `static/index.html`, `static/pcm-worklet.js` |
+| Browser client | `static/index.html`, `static/js/`, `static/pcm-worklet.js` |
 
 ### Audio formats
 
@@ -253,10 +262,14 @@ happens:
 
 ## Making it feel faster
 
-Most of the delay is upstream: AssemblyAI advertises **~1 s end-to-end** for
-speech in to speech out, and the relay here adds well under a millisecond. So
-tuning is mostly about not waiting longer than necessary to decide you have
-stopped talking.
+The call studio displays an observed **reply wait**: speech-stopped event received
+to first reply audio scheduled, including the playback cushion. This excludes
+upstream speech detection and device output latency; it is not an end-to-end
+benchmark. No live provider benchmark has been run for this UI update.
+
+Tools execute in an ordered worker independently of incoming audio. A slow tool
+therefore no longer pauses the audio reader or delays its interruption handling.
+Turn-detection tuning still affects how long the provider waits for silence.
 
 | Setting | Effect |
 |---|---|
@@ -268,7 +281,7 @@ If replies start cutting you off, raise `AGENT_MIN_SILENCE_MS` to 500-700. If
 the agent feels sluggish, lower it toward 250.
 
 The client also keeps its playback cushion at 20 ms — enough to absorb jitter
-without adding audible delay. Raise it in `static/index.html` only if playback
+without adding audible delay. Raise it in `static/js/audio.js` only if playback
 stutters.
 
 Because `turn_detection` is the newest part of the API payload, a rejected

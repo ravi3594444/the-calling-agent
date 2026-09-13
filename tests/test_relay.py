@@ -103,6 +103,19 @@ def _drain(ws, wanted: str, limit: int = 25) -> dict | None:
     return None
 
 
+def _completed_tool(ws, call_id: str) -> dict:
+    """Wait for execution, which now runs independently of the audio reader."""
+    for _ in range(25):
+        event = ws.receive_json().get("event", {})
+        if (
+            event.get("type") == "tool.activity"
+            and event.get("call_id") == call_id
+            and event.get("status") != "started"
+        ):
+            return event
+    raise AssertionError(f"tool {call_id} did not complete")
+
+
 def test_healthz_reports_config_without_leaking_key(upstream):
     resp = _client().get("/healthz")
     assert resp.status_code == 200
@@ -115,9 +128,12 @@ def test_healthz_reports_config_without_leaking_key(upstream):
 def test_index_serves_client_page(upstream):
     resp = _client().get("/")
     assert resp.status_code == 200
-    # AudioWorklet, not MediaRecorder, and a real tap-to-start button.
-    assert "pcm-worklet.js" in resp.text
-    assert "MediaRecorder" not in resp.text
+    # The page loads the module entrypoint and the capture module is served.
+    assert 'src="/static/js/app.js"' in resp.text
+    audio = _client().get("/static/js/audio.js")
+    assert audio.status_code == 200
+    assert "pcm-worklet.js" in audio.text
+    assert "AudioWorkletNode" in audio.text
     assert 'id="call"' in resp.text
 
 
@@ -164,7 +180,7 @@ def test_tool_call_round_trips(upstream):
         }
     )
     with _client().websocket_connect("/ws") as ws:
-        _drain(ws, "event")
+        _completed_tool(ws, "call-7")
 
     results = [m for m in upstream.received if m["type"] == "tool.result"]
     assert results, f"no tool.result sent; got {[m['type'] for m in upstream.received]}"
@@ -178,7 +194,7 @@ def test_unknown_tool_reports_error_rather_than_crashing(upstream):
         {"type": "tool.call", "name": "no_such_tool", "call_id": "c-9", "arguments": {}}
     )
     with _client().websocket_connect("/ws") as ws:
-        _drain(ws, "event")
+        _completed_tool(ws, "c-9")
 
     results = [m for m in upstream.received if m["type"] == "tool.result"]
     assert results and "No tool named" in results[0]["result"]
@@ -506,7 +522,7 @@ def test_tool_result_waits_for_reply_done(upstream):
     )
 
     with _client().websocket_connect("/ws") as ws:
-        _drain(ws, "event")  # let the exchange happen
+        _completed_tool(ws, "c-1")
         # Nothing should have been sent while the reply was still in progress.
         assert not [m for m in upstream.received if m["type"] == "tool.result"]
 
@@ -519,10 +535,7 @@ def test_reply_done_releases_the_queued_result(upstream):
     )
 
     with _client().websocket_connect("/ws") as ws:
-        for _ in range(12):
-            msg = ws.receive_json()
-            if msg.get("event", {}).get("type") == "reply.done":
-                break
+        _completed_tool(ws, "c-1")
 
     results = [m for m in upstream.received if m["type"] == "tool.result"]
     assert results, "reply.done did not release the tool result"
@@ -536,7 +549,7 @@ def test_tool_result_is_sent_at_once_when_no_reply_is_in_progress(upstream):
     )
 
     with _client().websocket_connect("/ws") as ws:
-        _drain(ws, "event")
+        _completed_tool(ws, "c-2")
 
     results = [m for m in upstream.received if m["type"] == "tool.result"]
     assert results and results[0]["call_id"] == "c-2"

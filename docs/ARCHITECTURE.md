@@ -1,102 +1,131 @@
 # Architecture
 
-## The shape of the system
+Tableline is the product UI for the existing restaurant calling agent. It connects
+a browser microphone to AssemblyAI and turns restaurant tool results into visible
+outcomes. The interactive demo is a separate, local, scripted experience.
 
+```mermaid
+flowchart TD
+  UI[Call studio] --> Audio[Audio graph]
+  Audio --> Relay[AgentSession relay]
+  Relay --> Provider[AssemblyAI voice API]
+  Provider --> Relay
+  Relay --> Audio
+  Relay --> Worker[Ordered tool worker]
+  Worker --> Store[Reservation store]
+  Worker --> UI
 ```
-┌──────────────┐   WebSocket    ┌──────────────┐   WebSocket   ┌────────────────┐
-│    Browser   │  PCM16 24kHz   │  This server │  input.audio  │  AssemblyAI    │
-│              │ ─────────────▶ │              │ ────────────▶ │  Voice Agent   │
-│ AudioWorklet │                │  AgentSession│               │  API           │
-│   capture    │ ◀───────────── │    (relay)   │ ◀──────────── │ (STT+LLM+TTS)  │
-│   playback   │  audio / clear │              │  reply.audio  │                │
-└──────────────┘                └──────────────┘               └────────────────┘
-```
 
-The important property: **the server is not a pipeline, it is a relay.** There
-is no STT step, no LLM call, and no TTS step in this codebase. The Voice Agent
-API does all three behind one connection, which is why `session.py` is short and
-why there are no provider abstractions for models.
+## Boundaries
 
-## Modules
+| Module | Owns |
+| --- | --- |
+| static/js/app.js | DOM rendering, transcript, receipt, mode selection, explicit export |
+| static/js/call-session.js | Call lifecycle, socket ownership, readiness, reconnects, timing |
+| static/js/audio.js | Microphone lifetime, PCM encoding, playback queue, mute, analysers |
+| static/pcm-worklet.js | 20 ms capture frames and resampling to 24 kHz |
+| static/js/visualizer.js | Canvas rendering from audio amplitude; motion and visibility preferences |
+| static/js/demo.js | Scripted demo choices and simulated results; no microphone, socket or tools |
+| main.py | Static files, public experience metadata, health, voices, WebSocket entrypoint |
+| session.py | Two audio pumps, one ordered tool worker, tool-result delivery and cleanup |
+| transport/ | Channel-specific framing behind AudioTransport |
+| restaurant.py | Deterministic capacity/booking logic and structured receipts |
+| agent_config.py | Existing prompt, voice, tool schema and dispatch |
 
-| File | Responsibility |
-|---|---|
-| `main.py` | FastAPI app: static page, `/healthz`, `/ws` |
-| `session.py` | Opens the upstream socket, pumps both directions, dispatches tools |
-| `agent_config.py` | Prompt, voice, greeting, tool definitions and implementations |
-| `protocol.py` | Message-type constants and audio encodings |
-| `transport/base.py` | `AudioTransport` interface |
-| `transport/browser.py` | Browser WebSocket implementation |
-| `config.py` | Environment-backed settings |
+The client has no runtime framework or build step. Its fonts are served locally.
+Node dependencies are for tests and formatting only; they are excluded from
+Docker and Vercel uploads.
 
-## Why `AudioTransport` exists
+## Call lifecycle and audio
 
-It is the one abstraction that earns its place. A telephony transport differs
-from the browser only in its audio encoding and wire framing:
+The call controller owns one generation token. Every asynchronous callback checks
+that it still belongs to the current call and socket. Cancelling while a microphone
+permission request is pending releases a late stream and cannot restart the call.
 
-| | Browser | Telnyx / Twilio |
-|---|---|---|
-| Encoding | `audio/pcm` 24 kHz | `audio/pcmu` 8 kHz |
-| Framing | our own JSON | provider's `media` events |
-| Transcoding | none | none — µ-law is byte-compatible |
-| Relay logic | identical | identical |
+An open browser WebSocket is not proof that the voice agent is ready. Capture
+frames are forwarded only after session.ready. The caller can cancel during setup;
+a readiness deadline prevents an indefinite connecting state.
 
-`build_session_update(encoding)` takes the transport's encoding and pins both
-input and output format to it. Input and output must match: if they differ, the
-agent's reply comes back in a format the transport cannot play.
+The AudioContext is created and resumed in the user gesture task. Capture is
+PCM16, mono, 24 kHz, in 20 ms frames. Playback starts with a 20 ms cushion and
+schedules chunks contiguously. An analyser on the playback path drives the visual;
+the microphone analyser drives it when the caller speaks. Speaking state lasts
+until scheduled audio ends, even if reply.done has already arrived.
 
-## Concurrency
+Barge-in still follows the provider's input.speech.started signal and the existing
+allow_interruptions setting. The relay clears queued audio and suppresses late
+chunks until a new reply.started. Transient socket failure retains the audio
+graph and selected mute state, drops stale playback, and resumes the same session. Reconnects share a 25-second
+total budget, so slow handshakes cannot extend retries indefinitely.
 
-`AgentSession._pump` runs two tasks — client→agent and agent→client — and stops
-as soon as either finishes, cancelling the other. A browser disconnect ends
-`recv_audio()`, which ends the session; an upstream close ends the downstream
-iterator with the same result. Neither direction can outlive the other.
+Backpressure is bounded: an upload socket with more than 128 KiB queued ends the
+call with an explicit error. A playback queue over 15 seconds also stops explicitly.
+Neither path silently discards words and then pretends the conversation succeeded.
 
-## Barge-in
+## Tool execution
 
-When the user interrupts, the API emits `input.speech.started`. The relay turns
-that into `transport.clear()`, and the browser stops every scheduled
-`AudioBufferSourceNode` and resets its playback cursor. Without this the agent
-keeps speaking from already-buffered audio while the user talks over it.
+The audio reader enqueues tool calls without awaiting their execution. A separate
+worker runs them in arrival order, so an availability check precedes the next
+booking action while incoming audio and interruption events remain responsive.
+The queue accepts at most 16 pending actions.
 
-Playback scheduling keeps a `nextPlayAt` cursor so chunks play back-to-back. If
-the cursor falls behind `currentTime` after a network stall, it restarts at now
-plus a 40 ms cushion rather than dumping queued audio at once.
+Tool results still wait until reply.done when a reply is active. A two-second
+guard releases them if that event is missing. The guard never cancels itself
+while awaiting an upstream send. Pump shutdown cancels the worker and guard and
+clears unsent results. Cancelling an asyncio task cannot reverse a synchronous
+tool already running in a thread: an in-flight mutation may finish after hangup.
+Do not automatically retry an unverified booking under a new call ID.
 
-## Tool calls
+Repeated tool call IDs return the cached result within the current AgentSession,
+without running the side effect again. This cache is not durable or shared across
+new relays/resumes. A production store needs durable idempotency and reconciliation.
 
-`tool.call` → look up the name in `TOOL_IMPLEMENTATIONS` → run it in a thread
-(so a slow tool cannot stall the audio pump) → reply with `tool.result`. Unknown
-names and exceptions return an error *string* to the agent rather than raising,
-so a broken tool degrades the conversation instead of dropping the call.
+Each action emits tool.activity with started/completed/error state. Completion means
+the tool returned, including business refusals; it does not imply a booking.
+Only BookingResult carries a structured receipt from a booking that exists. Spoken
+responses remain strings for compatibility with the provider and existing tools.
+The UI never infers success from an AI transcript or submitted arguments.
 
-## Reconnect and resume
+The in-memory store uses a reentrant lock for capacity check plus insert, so
+simultaneous calls in one process cannot overbook the same slot. It remains
+ephemeral and is not shared between instances.
 
-A dropped socket is routine, not exceptional: any serverless host closes the
-connection when its function hits the duration limit. The recovery path:
+## Timing and animation
 
-1. The client stores `session_id` from `session.ready`.
-2. On an unexpected close it retries with backoff — 0.5s, 1s, 2s, 4s, 8s — up
-   to five attempts, reconnecting to `/ws?resume=<session_id>`.
-3. The server sees `resume` and sends `session.resume` rather than
-   `session.update`, rejoining the session the API holds open for ~30 seconds.
-4. Queued playback is dropped on disconnect so no stale fragment plays after
-   the gap.
+Reply wait is measured using one browser monotonic clock, from receipt of
+input.speech.stopped to the scheduled start of the first reply chunk. It includes
+the playback cushion. It excludes the preceding voice activity detection delay,
+earlier network time, and hardware output latency. It is not an end-to-end speech
+latency benchmark. Greetings and the scripted demo do not emit samples.
 
-The microphone stream, `AudioContext`, and worklet are **not** torn down during
-a reconnect; only the WebSocket is rebuilt. Re-acquiring the mic would prompt
-the user again and lose the audio graph.
+The Canvas 2D visual runs at about 30 frames per second, caps device pixel ratio
+at two, and pauses while hidden or outside the viewport. Reduced-motion preference
+renders a static field. There are no particle objects allocated per frame and no
+per-frame DOM updates. Transcript DOM growth is bounded while the export retains
+the full conversation.
 
-The client holds the session id because on a serverless platform the instance
-that started the call is not the one handling the reconnect — there is no
-server-side memory to look it up in.
+## Privacy and deployment limits
 
-## Known gaps
+Transcripts and action results are held in tab memory and exported only on request.
+The browser stores only voice preference. The provider processes audio and can
+retain session recordings/transcripts under its own settings. Tool-result logs
+omit caller names, phone numbers, and notes.
 
-- **No authentication on `/ws`.** Anyone who can reach the host can open a
-  session and spend your AssemblyAI credit. Add a token check before exposing
-  the URL publicly.
-- **No concurrency limit.** Each browser tab is one billed upstream session.
-- **A resumed session is not verified as still valid.** If the ~30-second
-  window has passed, the API's response to `session.resume` decides what
-  happens; the client does not fall back to starting a fresh session.
+This is a browser calling prototype. Telephone-number integration is not implemented.
+The existing Google Cloud and Vercel deployment paths are retained. Public deployment
+still needs access control, usage limits, a durable transactional reservation store,
+and explicit provider retention settings. These are not implemented by the UI update.
+
+## Verification
+
+- Python relay/domain tests use a mock upstream and verify real local tool execution.
+- Native Node tests exercise call cancellation, readiness, reconnects, backpressure,
+  PCM conversion, playback state, and timing with controlled audio/socket dependencies.
+- jsdom tests exercise the actual page/controller and scripted demo, including changing
+  a booking time and cancelling. They are DOM interaction tests, not visual screenshots.
+- A real provider key is required for voice quality and end-to-end latency measurement.
+  No live provider benchmark was run for this change.
+- Visual browser review was blocked by the execution environment's browser URL policy.
+
+References: [AssemblyAI Voice Agent API](https://www.assemblyai.com/docs/voice-agents/voice-agent-api)
+and [AudioContext options](https://developer.mozilla.org/en-US/docs/Web/API/AudioContext/AudioContext).

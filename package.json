@@ -1,0 +1,16 @@
+{
+  "name": "tableline-client",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/frontend/*.test.js",
+    "format:check": "prettier --check static/index.html static/styles.css static/js tests/frontend package.json"
+  },
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1",
+    "prettier": "^3.9.6"
+  }
+}
