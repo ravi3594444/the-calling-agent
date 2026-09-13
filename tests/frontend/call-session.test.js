@@ -22,7 +22,7 @@ function fixture(startAudio = () => Promise.resolve()) {
     audioFactory: (callbacks) => {
       const audio = {
         ...callbacks,
-        start: () => startAudio(audios.length),
+        start: (options) => startAudio(audios.length, options),
         closed: false,
         playing: false,
         sources: new Set(),
@@ -166,6 +166,59 @@ test('a late permission grant cannot resurrect an ended call or tear down a new 
   f.session.stop();
 });
 
+test('hangup aborts pending microphone setup and returns to ended immediately', async () => {
+  let setupSignal;
+  const f = fixture(
+    (_, { signal }) =>
+      new Promise((_, reject) => {
+        setupSignal = signal;
+        signal.addEventListener(
+          'abort',
+          () => {
+            const error = new Error('cancelled');
+            error.name = 'AbortError';
+            reject(error);
+          },
+          { once: true },
+        );
+      }),
+  );
+  const pending = f.session.start();
+  assert.equal(f.session.active, true);
+  f.session.stop();
+  await pending;
+  assert.equal(setupSignal.aborted, true);
+  assert.equal(f.session.active, false);
+  assert.equal(f.session.phase, 'ended');
+  assert.equal(f.audios[0].closed, true);
+  assert.equal(f.timers.size, 0);
+});
+
+test('microphone setup has a deadline instead of waiting indefinitely', async () => {
+  const f = fixture(
+    (_, { signal }) =>
+      new Promise((_, reject) => {
+        signal.addEventListener(
+          'abort',
+          () => {
+            const error = new Error('cancelled');
+            error.name = 'AbortError';
+            reject(error);
+          },
+          { once: true },
+        );
+      }),
+  );
+  const pending = f.session.start();
+  f.timer();
+  await pending;
+  assert.equal(f.session.active, false);
+  assert.equal(f.session.phase, 'error');
+  assert.match(f.events.at(-1).message, /took too long/);
+  assert.equal(f.audios[0].closed, true);
+  assert.equal(f.timers.size, 0);
+});
+
 test('error plus close schedules one resume and never buffers disconnected microphone audio', async () => {
   const f = fixture();
   await f.session.start('sophie');
@@ -212,6 +265,7 @@ test('readiness timeout ends an unestablished call and releases audio', async ()
   f.timer();
   assert.equal(f.session.active, false);
   assert.equal(f.session.phase, 'error');
+  assert.match(f.events.at(-1).message, /within 12 seconds/);
   assert.equal(f.audios[0].closed, true);
   assert.equal(f.timers.size, 0);
 });
@@ -259,7 +313,7 @@ test('PCM decoding preserves signed samples and rejects truncated frames', () =>
   assert.throws(() => base64ToPCM(btoa('x')), /Incomplete audio/);
 });
 
-test('real audio setup resumes before the permission promise and stops a late stream', async () => {
+test('real audio setup aborts promptly and stops a late permission stream', async () => {
   const originalWindow = globalThis.window;
   const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   const order = [];
@@ -296,9 +350,11 @@ test('real audio setup resumes before the permission promise and stops a late st
   });
   try {
     const audio = new CallAudio({ onFrame() {}, onPlayback() {}, onError() {} });
-    const pending = audio.start();
+    const controller = new AbortController();
+    const pending = audio.start({ signal: controller.signal });
     assert.ok(order.includes('resume'));
-    audio.close();
+    controller.abort();
+    await assert.rejects(pending, { name: 'AbortError' });
     grant({
       getTracks: () => [
         {
@@ -308,7 +364,7 @@ test('real audio setup resumes before the permission promise and stops a late st
         },
       ],
     });
-    await pending;
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(stopped, true);
     assert.equal(closed, true);
   } finally {

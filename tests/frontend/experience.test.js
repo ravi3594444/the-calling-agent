@@ -8,7 +8,7 @@ const demoSource = await readFile(new URL('../../static/js/demo.js', import.meta
 const appSource = await readFile(new URL('../../static/js/app.js', import.meta.url), 'utf8');
 
 // Source-level DOM tests, not a visual browser or provider-audio test.
-async function load() {
+async function load({ liveConfigured = false } = {}) {
   const dom = new JSDOM(html, { url: 'https://tableline.test/', runScripts: 'outside-only' });
   const window = dom.window;
   const timers = new Map(),
@@ -29,7 +29,7 @@ async function load() {
       ok: true,
       json: async () =>
         path === '/experience'
-          ? { live_configured: false, restaurant: 'Test restaurant' }
+          ? { live_configured: liveConfigured, restaurant: 'Test restaurant' }
           : { current: 'arjun', known: { arjun: 'Hindi / English', sophie: 'English' } },
     };
   };
@@ -37,7 +37,31 @@ async function load() {
     setPhase() {}
   };
   window.CallSession = class {
-    active = false;
+    constructor({ emit }) {
+      this.emit = emit;
+      this.active = false;
+      this.phase = 'idle';
+      this.ready = false;
+      this.muted = false;
+      this.outputMuted = false;
+    }
+    start() {
+      this.active = true;
+      this.phase = 'connecting';
+      this.emit({ type: 'state', phase: this.phase, active: true });
+    }
+    stop() {
+      this.active = false;
+      this.ready = false;
+      this.phase = 'ended';
+      this.emit({ type: 'state', phase: this.phase, active: false });
+    }
+    setMuted(value) {
+      this.muted = value;
+    }
+    setOutputMuted(value) {
+      this.outputMuted = value;
+    }
     level() {
       return 0;
     }
@@ -69,6 +93,23 @@ async function load() {
   };
   return { dom, window, document, byId, requests, timers, advance, untilChoices, reply };
 }
+
+test('the live call button remains an immediate hangup control while connecting', async () => {
+  const f = await load({ liveConfigured: true });
+  try {
+    assert.equal(f.byId('mode-live').getAttribute('aria-pressed'), 'true');
+    f.byId('call').click();
+    assert.match(f.byId('call').textContent, /Cancel connection/);
+    assert.equal(f.byId('call').getAttribute('aria-label'), 'Cancel connection');
+    assert.equal(f.byId('call').disabled, false);
+    f.byId('call').click();
+    assert.match(f.byId('call').textContent, /Start conversation/);
+    assert.equal(f.byId('call').getAttribute('aria-label'), 'Start conversation');
+    assert.match(f.byId('status').textContent, /ended/);
+  } finally {
+    f.dom.window.close();
+  }
+});
 
 test('unconfigured live calls have an explicit disabled state and a usable demo', async () => {
   const f = await load();

@@ -78,6 +78,18 @@ function renderState(event) {
       ? 'connecting'
       : 'live'
     : 'idle';
+  $('call').setAttribute(
+    'aria-label',
+    active
+      ? ['connecting', 'reconnecting'].includes(phase)
+        ? 'Cancel connection'
+        : mode === 'demo'
+          ? 'End walkthrough'
+          : 'End conversation'
+      : mode === 'demo'
+        ? 'Start interactive demo'
+        : 'Start conversation',
+  );
   $('call').querySelector('span').textContent = active
     ? ['connecting', 'reconnecting'].includes(phase)
       ? 'Cancel connection'
@@ -394,8 +406,11 @@ function start(scenario = null) {
   else live.start($('voice').value);
 }
 $('call').addEventListener('click', () => {
-  if (controller.active) controller.stop();
-  else start();
+  if (controller.active) {
+    controller.stop();
+    return;
+  }
+  start();
 });
 $('mode-live').addEventListener('click', () => setMode('live'));
 $('mode-demo').addEventListener('click', () => setMode('demo'));
