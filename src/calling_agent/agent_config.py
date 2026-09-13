@@ -7,6 +7,7 @@ stays pure plumbing. The reservation logic itself is in restaurant.py.
 from datetime import UTC, date, datetime
 from typing import Any
 
+from .agent_spec import AgentDefinition
 from .config import settings
 from .protocol import SESSION_RESUME, SESSION_UPDATE
 from .restaurant import IMPLEMENTATIONS as TOOL_IMPLEMENTATIONS
@@ -167,9 +168,16 @@ FALLBACK_VOICE = "ivy"
 
 
 def build_session_update(
-    encoding: str, *, tune_turns: bool = True, voice: str | None = None
+    encoding: str,
+    *,
+    tune_turns: bool = True,
+    voice: str | None = None,
+    agent: AgentDefinition | None = None,
 ) -> dict[str, Any]:
     """Build the session.update message for a transport's audio encoding.
+
+    `agent` is what the session will BE -- prompt, greeting and tools. It
+    defaults to the restaurant so every existing caller is unchanged.
 
     Both input and output formats are pinned to the same encoding. If they
     differ, the agent's reply comes back in a format the transport cannot play
@@ -180,6 +188,8 @@ def build_session_update(
     single unknown field there is rejected with 1008, taking down the whole
     session rather than just that setting.
     """
+    agent = agent or RESTAURANT
+
     # Stored-agent mode: agent_id must be the only field in `session`.
     # Prompt, greeting and tools are applied server-side.
     if settings.agent_id:
@@ -199,13 +209,13 @@ def build_session_update(
         "session": {
             # Rebuilt per session: a long-lived process must not serve
             # yesterday's date to today's callers.
-            "system_prompt": _build_prompt(),
-            "greeting": settings.agent_greeting,
-            "tools": TOOLS,
+            "system_prompt": agent.build_prompt(),
+            "greeting": agent.greeting,
+            "tools": agent.tools,
             "input": audio_in,
             "output": {
                 "type": "audio",
-                "voice": voice or settings.agent_voice,
+                "voice": voice or agent.voice or settings.agent_voice,
                 "format": {"encoding": encoding},
             },
         },
@@ -221,3 +231,15 @@ def build_session_resume(session_id: str) -> dict[str, Any]:
     rather than a dropped call.
     """
     return {"type": SESSION_RESUME, "session_id": session_id}
+
+
+# The agent this server has always been. Defined last because it names every
+# part above it; anything that wants a different agent builds its own
+# AgentDefinition and hands it to AgentSession.
+RESTAURANT = AgentDefinition(
+    name="restaurant",
+    build_prompt=_build_prompt,
+    greeting=settings.agent_greeting,
+    tools=TOOLS,
+    run_tool=run_tool,
+)

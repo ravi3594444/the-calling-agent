@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from calling_agent import restaurant
 from calling_agent import session as session_module
+from calling_agent.agent_spec import AgentDefinition
 from calling_agent.config import settings
 from calling_agent.main import app
 
@@ -64,6 +65,27 @@ def test_public_experience_has_no_key_and_does_not_claim_live_readiness(monkeypa
     assert "assemblyai_api_key" not in body
 
 
+
+def _agent_running(tool):
+    """An AgentSession whose only tool is `tool`.
+
+    The fake is what the session is CONSTRUCTED with, not a name patched onto
+    the module: a session that ignored the definition it was handed would fail
+    these tests instead of passing them by accident.
+    """
+    return session_module.AgentSession(
+        Transport(),
+        agent=AgentDefinition(
+            name="test",
+            build_prompt=lambda: "test prompt",
+            greeting="hello",
+            tools=[],
+            run_tool=tool,
+        ),
+    )
+
+
+
 async def test_missing_key_closes_transport(monkeypatch):
     monkeypatch.setattr(settings, "assemblyai_api_key", "")
     transport = Transport()
@@ -80,10 +102,10 @@ async def test_slow_tool_does_not_block_audio_or_interruption(monkeypatch):
         assert release.wait(2)
         return "Tool completed", False
 
-    monkeypatch.setattr(session_module, "run_tool", slow_tool)
     monkeypatch.setattr(settings, "allow_interruptions", True)
-    transport, upstream = Transport(), Upstream()
-    agent = session_module.AgentSession(transport)
+    upstream = Upstream()
+    agent = _agent_running(slow_tool)
+    transport = agent._transport
     worker = asyncio.create_task(agent._run_tools(upstream))
     try:
         await agent._handle_upstream(
@@ -121,15 +143,14 @@ async def test_timeout_guard_can_await_send_without_cancelling_itself(monkeypatc
     assert upstream.sent[0]["call_id"] == "guard-1"
 
 
-async def test_duplicate_tool_call_executes_side_effect_once(monkeypatch):
+async def test_duplicate_tool_call_executes_side_effect_once():
     calls = []
 
     def action(*args):
         calls.append(args)
         return "Booked once", False
 
-    monkeypatch.setattr(session_module, "run_tool", action)
-    agent = session_module.AgentSession(Transport())
+    agent = _agent_running(action)
     upstream = Upstream()
     message = {"name": "book_table", "call_id": "same-id", "arguments": {}}
     await agent._handle_tool_call(upstream, message)
