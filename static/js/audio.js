@@ -22,6 +22,14 @@ export function base64ToPCM(value) {
   return pcm;
 }
 
+function abortError() {
+  if (typeof DOMException === 'function')
+    return new DOMException('Audio setup cancelled.', 'AbortError');
+  const error = new Error('Audio setup cancelled.');
+  error.name = 'AbortError';
+  return error;
+}
+
 export class CallAudio {
   constructor({ onFrame, onPlayback, onError }) {
     this.onFrame = onFrame;
@@ -36,7 +44,7 @@ export class CallAudio {
     this.samples = new Uint8Array(256);
   }
 
-  async start() {
+  async start({ signal } = {}) {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error('Use HTTPS or localhost in a browser that supports microphone access.');
     }
@@ -49,6 +57,10 @@ export class CallAudio {
       this.ctx = new AudioContextClass({ latencyHint: 'interactive' });
     }
     const ctx = this.ctx;
+    if (signal?.aborted) {
+      this.close();
+      throw abortError();
+    }
     const microphone = navigator.mediaDevices
       .getUserMedia({
         audio: {
@@ -63,12 +75,23 @@ export class CallAudio {
         else this.stream = stream;
         return stream;
       });
+    let cancel;
+    const cancelled = signal
+      ? new Promise((_, reject) => {
+          cancel = () => {
+            this.close();
+            reject(abortError());
+          };
+          signal.addEventListener('abort', cancel, { once: true });
+        })
+      : null;
     try {
-      await Promise.all([
+      const setup = Promise.all([
         ctx.resume(),
         microphone,
         ctx.audioWorklet.addModule('/static/pcm-worklet.js'),
       ]);
+      await (cancelled ? Promise.race([setup, cancelled]) : setup);
       if (this.closed) return;
       this.input = ctx.createMediaStreamSource(this.stream);
       this.capture = new AudioWorkletNode(ctx, 'pcm-capture', {
@@ -95,6 +118,8 @@ export class CallAudio {
     } catch (error) {
       this.close();
       throw error;
+    } finally {
+      if (cancel) signal.removeEventListener('abort', cancel);
     }
   }
 

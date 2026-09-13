@@ -18,19 +18,19 @@ flowchart TD
 
 ## Boundaries
 
-| Module | Owns |
-| --- | --- |
-| static/js/app.js | DOM rendering, transcript, receipt, mode selection, explicit export |
-| static/js/call-session.js | Call lifecycle, socket ownership, readiness, reconnects, timing |
-| static/js/audio.js | Microphone lifetime, PCM encoding, playback queue, mute, analysers |
-| static/pcm-worklet.js | 20 ms capture frames and resampling to 24 kHz |
-| static/js/visualizer.js | Canvas rendering from audio amplitude; motion and visibility preferences |
-| static/js/demo.js | Scripted demo choices and simulated results; no microphone, socket or tools |
-| main.py | Static files, public experience metadata, health, voices, WebSocket entrypoint |
-| session.py | Two audio pumps, one ordered tool worker, tool-result delivery and cleanup |
-| transport/ | Channel-specific framing behind AudioTransport |
-| restaurant.py | Deterministic capacity/booking logic and structured receipts |
-| agent_config.py | Existing prompt, voice, tool schema and dispatch |
+| Module                    | Owns                                                                           |
+| ------------------------- | ------------------------------------------------------------------------------ |
+| static/js/app.js          | DOM rendering, transcript, receipt, mode selection, explicit export            |
+| static/js/call-session.js | Call lifecycle, socket ownership, readiness, reconnects, timing                |
+| static/js/audio.js        | Microphone lifetime, PCM encoding, playback queue, mute, analysers             |
+| static/pcm-worklet.js     | 20 ms capture frames and resampling to 24 kHz                                  |
+| static/js/visualizer.js   | Canvas rendering from audio amplitude; motion and visibility preferences       |
+| static/js/demo.js         | Scripted demo choices and simulated results; no microphone, socket or tools    |
+| main.py                   | Static files, public experience metadata, health, voices, WebSocket entrypoint |
+| session.py                | Two audio pumps, one ordered tool worker, tool-result delivery and cleanup     |
+| transport/                | Channel-specific framing behind AudioTransport                                 |
+| restaurant.py             | Deterministic capacity/booking logic and structured receipts                   |
+| agent_config.py           | Existing prompt, voice, tool schema and dispatch                               |
 
 The client has no runtime framework or build step. Its fonts are served locally.
 Node dependencies are for tests and formatting only; they are excluded from
@@ -40,7 +40,10 @@ Docker and Vercel uploads.
 
 The call controller owns one generation token. Every asynchronous callback checks
 that it still belongs to the current call and socket. Cancelling while a microphone
-permission request is pending releases a late stream and cannot restart the call.
+permission request is pending aborts setup immediately, releases a late stream and
+cannot restart the call. Microphone setup and initial agent readiness each have a
+12-second deadline, so an ignored permission prompt or stalled upstream cannot
+leave the interface connecting for a minute.
 
 An open browser WebSocket is not proof that the voice agent is ready. Capture
 frames are forwarded only after session.ready. The caller can cancel during setup;

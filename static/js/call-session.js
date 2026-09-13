@@ -1,7 +1,8 @@
 import { CallAudio } from './audio.js';
 
 const BACKOFF = [500, 1000, 2000, 4000, 8000];
-const READY_TIMEOUT = 18000;
+const AUDIO_SETUP_TIMEOUT = 12000;
+const READY_TIMEOUT = 12000;
 const RESUME_BUDGET = 25000;
 const MAX_BUFFERED_BYTES = 128 * 1024;
 
@@ -43,6 +44,15 @@ export class CallSession {
     this.pendingTools = new Set();
     this.muted = false;
     this.state('connecting', 'Allow your microphone to start the conversation.');
+    this.setupAbort = new AbortController();
+    this.setupTimer = this.setTimer(() => {
+      if (this.active && generation === this.generation) {
+        this.stop(
+          'Microphone setup took too long. Check the browser permission and try again.',
+          true,
+        );
+      }
+    }, AUDIO_SETUP_TIMEOUT);
     const audio = this.audioFactory({
       onFrame: (data) => {
         if (!this.active || generation !== this.generation || !this.ready) return;
@@ -70,15 +80,21 @@ export class CallSession {
     this.audio = audio;
     audio.setOutputMuted(this.outputMuted);
     try {
-      await audio.start();
+      await audio.start({ signal: this.setupAbort.signal });
       // A cancelled permission request may resolve after a new call has begun.
       if (!this.active || generation !== this.generation) {
         audio.close();
         return;
       }
+      this.clearTimer(this.setupTimer);
+      this.setupTimer = null;
+      this.setupAbort = null;
       this.state('connecting', 'Connecting you to the host…');
       this.connect(generation);
     } catch (error) {
+      this.clearTimer(this.setupTimer);
+      this.setupTimer = null;
+      this.setupAbort = null;
       if (generation !== this.generation) return;
       const messages = {
         NotAllowedError:
@@ -116,7 +132,9 @@ export class CallSession {
     const current = () => this.active && generation === this.generation && socket === this.socket;
     this.readyTimer = this.setTimer(
       () => {
-        if (current()) this.disconnect(socket, generation);
+        if (!current()) return;
+        if (this.sessionId) this.disconnect(socket, generation);
+        else this.stop('The host did not answer within 12 seconds. Please try again.', true);
       },
       Math.min(READY_TIMEOUT, remaining),
     );
@@ -260,15 +278,18 @@ export class CallSession {
     this.active = false;
     ++this.generation;
     this.ready = false;
+    this.setupAbort?.abort();
+    this.setupAbort = null;
+    this.clearTimer(this.setupTimer);
     this.clearTimer(this.readyTimer);
     this.clearTimer(this.reconnectTimer);
-    this.readyTimer = this.reconnectTimer = null;
+    this.setupTimer = this.readyTimer = this.reconnectTimer = null;
     const socket = this.socket;
     this.socket = null;
     if (socket) {
       socket.onmessage = socket.onclose = socket.onerror = null;
       try {
-        socket.close();
+        socket.close(1000, 'Caller ended the conversation');
       } catch {
         /* already closed */
       }
