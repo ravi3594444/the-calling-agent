@@ -47,8 +47,41 @@ def _static_dir() -> Path:
 
 STATIC_DIR = _static_dir()
 
+
+def _mount_static(app: FastAPI, directory: Path) -> bool:
+    """Mount the browser client if it is there, and carry on if it is not.
+
+    `StaticFiles(check_dir=True)` raises AT IMPORT, so a missing directory did
+    not cost the page -- it cost the process. `import calling_agent.main`
+    raised, which means the server never started, `/healthz` never answered,
+    and a consumer's tests could not even import the module to check anything
+    else.
+
+    And a plain `pip install` lands exactly there: the wheel does not ship
+    `static/` (it lives at the repo root, beside `src/`, not inside the
+    package), so with no STATIC_DIR set both branches of `_static_dir` miss and
+    the last resort points at a directory that cannot exist. The docstring
+    above has described this failure since the day the override was added --
+    the override dodges it, it never stopped being true without one.
+
+    A missing UI must cost the UI. The websocket, `/healthz` and every agent
+    this relay carries do not read a single file from here; the browser client
+    is one of the transports, not the product. So: no directory, no `/static`,
+    a warning that names the path, and a phone that still answers.
+    """
+    if not directory.is_dir():
+        log.warning(
+            "static directory %s does not exist: serving the API without the "
+            "browser client. Set STATIC_DIR if you meant to serve it.",
+            directory,
+        )
+        return False
+    app.mount("/static", StaticFiles(directory=directory), name="static")
+    return True
+
+
 app = FastAPI(title="calling-agent", version="0.1.0")
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+_mount_static(app, STATIC_DIR)
 
 
 def _build_agent(params: Mapping[str, str] | None = None) -> AgentDefinition | None:

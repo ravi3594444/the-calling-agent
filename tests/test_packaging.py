@@ -78,3 +78,39 @@ def test_no_override_prefers_the_checkout_over_the_package_dir(monkeypatch):
 
     monkeypatch.delenv("STATIC_DIR", raising=False)
     assert (main._static_dir() / "index.html").is_file()
+
+
+def test_a_missing_static_dir_costs_the_page_and_not_the_process(tmp_path):
+    """The failure a plain `pip install` hits, and the reason it was invisible.
+
+    The wheel does not ship `static/` -- it sits at the repo root, beside
+    `src/`, so it is not inside the package. Installed normally, with no
+    STATIC_DIR set, `_static_dir()` returns a path that cannot exist and
+    `StaticFiles(check_dir=True)` raised while the MODULE was importing: not a
+    404, a server that never starts. The consumer repo's tests could not even
+    import `calling_agent.main`.
+
+    One mutation per half, because the two halves protect opposite mistakes:
+
+    | mutation                                   | result             |
+    |--------------------------------------------|--------------------|
+    | `app.mount(...)` unconditionally, as it was | 1 failed, 119 passed |
+    | `_mount_static` returns True without mounting | 2 failed, 118 passed |
+
+    The first is killed only by this test. The second is killed by its second
+    half AND by `test_index_serves_client_page` (404 != 200) -- which is the
+    point of asserting the route exists rather than only that nothing raised:
+    a `_mount_static` that quietly mounts nothing passes "it did not raise".
+    """
+    from fastapi import FastAPI
+
+    from calling_agent import main
+
+    vacio = FastAPI()
+    assert main._mount_static(vacio, tmp_path / "no-existe") is False
+    assert not [r for r in vacio.routes if getattr(r, "name", "") == "static"]
+
+    real = FastAPI()
+    (tmp_path / "index.html").write_text("<!-- sí existe -->")
+    assert main._mount_static(real, tmp_path) is True
+    assert [r for r in real.routes if getattr(r, "name", "") == "static"]
