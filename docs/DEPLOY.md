@@ -124,6 +124,7 @@ appear as live transcript below the button.
 | Caddy cannot get a certificate | DNS not resolving to this IP yet, or `:80` blocked. HTTP-01 needs both. |
 | Agent talks over you | Barge-in relies on `input.speech.started`. Check the browser console for `clear` messages arriving. |
 | Agent transcribes its own voice | Speaker bleeding into the mic. Use headphones, or confirm `echoCancellation` is on. |
+| Every page load is a 500, `/healthz` is 200 | The browser client is not where the server looked. The log names the path at startup. An image built before the client shipped inside the wheel is the usual cause -- rebuild, or point `STATIC_DIR` at a directory that has `index.html` in it. `/` answers 503 with the same advice. |
 
 ## Cost
 

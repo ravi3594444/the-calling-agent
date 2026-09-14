@@ -104,6 +104,7 @@ All settings come from the environment or `.env` — see
 | `AGENT_VOICE`, `AGENT_GREETING` | Inline agent config. |
 | `AGENT_ID` | Bind to a stored agent instead. Mutually exclusive with inline config. |
 | `PUBLIC_HOSTNAME` | Your DuckDNS hostname. Deployment only. |
+| `STATIC_DIR` | Optional. Where the browser client lives. A checkout and an installed wheel each resolve it on their own; set it only to serve your own copy, which it outranks both of them to do. |
 
 To change what the agent says or add tools, edit `agent_config.py` — the
 `get_current_time` tool is there as a worked example of the JSON Schema shape

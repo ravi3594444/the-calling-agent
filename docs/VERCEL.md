@@ -89,6 +89,7 @@ deploy.
 | Session closes immediately with `1008 (policy violation)` | The API rejected `session.update`. Its close reason names the offending field and now appears on the page itself. Usual causes: a tool missing `"type": "function"` or using `input_schema` instead of `parameters`, an `input`/`output` block missing `"type": "audio"`, or an unknown voice name. |
 | `api_key_configured: false` | Variable not set for that environment, or set after the last deploy. Redeploy. |
 | 404 on `/static/pcm-worklet.js` | `includeFiles` missing from `vercel.json`; static files did not ship with the function. |
+| `/` answers 503, "the browser client is not deployed" | Same cause one step further on: the function has no `static/` at all. `api/index.py` serves the app from the source tree, so `static/` has to ship beside it -- check `includeFiles` before reaching for `STATIC_DIR`. |
 | Call drops at exactly 5 minutes with no recovery | Expected close, but reconnect failed. Check the browser console for the `?resume=` request. |
 | "Connection lost. Tap to start again." | Five reconnects failed. Usually the function is erroring — check `vercel logs`. |
 | Reconnect starts a *new* session | The client lost `sessionId`. Confirm `session.ready` carries `session_id`. |

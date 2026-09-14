@@ -18,6 +18,11 @@ dev = [
     "pytest-asyncio>=0.24",
     "ruff>=0.7",
     "httpx2>=0.28",
+    # test_packaging.py builds a wheel to check the browser client ships in
+    # it. Python 3.12 venvs no longer come with setuptools, and pip builds in
+    # an isolated environment the test cannot see, so ask for it here rather
+    # than let the check skip itself on the machines that matter.
+    "setuptools>=75",
 ]
 
 [build-system]
@@ -42,7 +47,14 @@ build-backend = "setuptools.build_meta"
 packages = [
     "calling_agent",
     "calling_agent.transport",
+    # Not importable packages -- directories of data. setuptools warns that an
+    # undeclared one is "absent from the `packages` configuration" and says it
+    # may stop shipping such a directory in a future version, so every
+    # subdirectory of static/ is named here. test_packaging.py fails if a new
+    # one is added without being added here.
     "calling_agent.static",
+    "calling_agent.static.js",
+    "calling_agent.static.fonts",
 ]
 
 [tool.setuptools.package-dir]
