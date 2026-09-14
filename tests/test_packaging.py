@@ -50,3 +50,31 @@ def test_vercel_config_is_consistent_with_the_entrypoint():
 def test_all_routes_reachable_through_the_catch_all_rewrite():
     cfg = json.loads((ROOT / "vercel.json").read_text())
     assert cfg["rewrites"] == [{"source": "/(.*)", "destination": "/api/index"}]
+
+
+def test_static_dir_is_found_from_a_checkout():
+    """The default path must resolve in the repo, or `make dev` serves nothing."""
+    from calling_agent.main import STATIC_DIR
+
+    assert (STATIC_DIR / "index.html").is_file()
+
+
+def test_static_dir_can_be_named_explicitly(monkeypatch, tmp_path):
+    """What a container installing this from git needs.
+
+    Mutation: ignoring STATIC_DIR kills this. Without the override, an
+    installed wheel resolves `parents[2]` to site-packages/../.. and the
+    server fails at import rather than at first request.
+    """
+    from calling_agent import main
+
+    (tmp_path / "index.html").write_text("<!-- elsewhere -->")
+    monkeypatch.setenv("STATIC_DIR", str(tmp_path))
+    assert main._static_dir() == tmp_path
+
+
+def test_no_override_prefers_the_checkout_over_the_package_dir(monkeypatch):
+    from calling_agent import main
+
+    monkeypatch.delenv("STATIC_DIR", raising=False)
+    assert (main._static_dir() / "index.html").is_file()

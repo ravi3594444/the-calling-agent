@@ -16,10 +16,11 @@ from websockets.asyncio.client import ClientConnection
 from . import protocol as p
 from .agent_config import (
     FALLBACK_VOICE,
+    RESTAURANT,
     build_session_resume,
     build_session_update,
-    run_tool,
 )
+from .agent_spec import AgentDefinition
 from .config import settings
 from .transport.base import AudioTransport
 
@@ -35,8 +36,12 @@ class AgentSession:
         transport: AudioTransport,
         resume_session_id: str | None = None,
         voice: str | None = None,
+        agent: AgentDefinition | None = None,
     ) -> None:
         self._transport = transport
+        # What this session IS. The relay below knows nothing about it beyond
+        # these two uses -- the opening payload, and running a tool call.
+        self._agent = agent or RESTAURANT
         self._resume_session_id = resume_session_id
         self._voice = voice
         self._session_id: str | None = None
@@ -80,7 +85,7 @@ class AgentSession:
                 (True, self._voice, None),
                 (False, self._voice, "turn detection tuning"),
             ]
-            requested = self._voice or settings.agent_voice
+            requested = self._voice or self._agent.voice or settings.agent_voice
             if requested != FALLBACK_VOICE:
                 # An unavailable voice id is the other common refusal, and the
                 # vendor's own documented default is the safest thing to land on.
@@ -140,7 +145,10 @@ class AgentSession:
                 log.info("resuming session %s", self._resume_session_id)
             else:
                 opening = build_session_update(
-                    self._transport.encoding, tune_turns=tune_turns, voice=voice
+                    self._transport.encoding,
+                    tune_turns=tune_turns,
+                    voice=voice,
+                    agent=self._agent,
                 )
             await upstream.send(json.dumps(opening))
             log.info(
@@ -311,7 +319,9 @@ class AgentSession:
                 {"type": "tool.activity", "status": "started", "name": name, "call_id": call_id}
             )
             started = perf_counter()
-            result, is_error = await asyncio.to_thread(run_tool, name, args)
+            result, is_error = await asyncio.to_thread(
+                self._agent.run_tool, name, args, call_id or ""
+            )
             elapsed_ms = round((perf_counter() - started) * 1000)
             # Do not put caller names, phone numbers or booking notes in logs.
             log.info("tool %s completed in %dms (error=%s)", name, elapsed_ms, is_error)
