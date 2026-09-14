@@ -116,6 +116,15 @@ def _completed_tool(ws, call_id: str) -> dict:
     raise AssertionError(f"tool {call_id} did not complete")
 
 
+def _any_completed_tool(ws) -> dict:
+    """Wait for a tool to finish, whatever the provider called it."""
+    for _ in range(25):
+        event = ws.receive_json().get("event", {})
+        if event.get("type") == "tool.activity" and event.get("status") != "started":
+            return event
+    raise AssertionError("no tool completed")
+
+
 def test_healthz_reports_config_without_leaking_key(upstream):
     resp = _client().get("/healthz")
     assert resp.status_code == 200
@@ -200,6 +209,28 @@ def test_unknown_tool_reports_error_rather_than_crashing(upstream):
     assert results and "No tool named" in results[0]["result"]
     # Flagged rather than disguised as a successful result.
     assert results[0]["is_error"] is True
+
+
+def test_a_tool_call_with_no_id_answers_without_a_null_call_id(upstream):
+    """End to end, through the real relay: the API must get no "call_id": null.
+
+    An explicit null is a value the API cannot pair with any call, so the
+    result is dropped and the agent waits on a tool that has already run. The
+    key is left out instead; everything else about the result is unchanged.
+    """
+    upstream.will_send({"type": "tool.call", "name": "restaurant_info", "arguments": {}})
+
+    with _client().websocket_connect("/ws") as ws:
+        # Waits on the tool finishing, NOT on an id: matching on one here would
+        # block forever -- receive_json has no timeout -- if the relay ever
+        # started inventing ids, which is the thing this test is about.
+        _any_completed_tool(ws)
+
+    results = [m for m in upstream.received if m["type"] == "tool.result"]
+    assert results, f"no tool.result sent; got {[m['type'] for m in upstream.received]}"
+    assert "call_id" not in results[0]
+    assert "Opening hours" in results[0]["result"]
+    assert results[0]["is_error"] is False
 
 
 def test_missing_api_key_tells_the_user(upstream, monkeypatch):

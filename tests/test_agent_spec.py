@@ -363,6 +363,118 @@ def test_the_diagnostic_payload_carries_the_configured_agent():
     assert [tool["name"] for tool in sesion["tools"]] == ["other_tool"]
 
 
+# --- AGENT_ID and AGENT_FACTORY are alternatives, not layers -----------------
+
+
+class _TransporteQueRegistra(_Transport):
+    """A transport that keeps what it was told, so a refusal can be read."""
+
+    def __init__(self):
+        self.events: list[dict] = []
+        self.closed = False
+
+    async def send_event(self, event: dict) -> None:
+        self.events.append(event)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_a_stored_agent_and_a_factory_together_are_refused(monkeypatch):
+    """Both configured used to resolve silently in favour of the stored one.
+
+    `build_session_update` returned early with {"agent_id": ...}, so the
+    factory's prompt, greeting, tools and voice were dropped before they were
+    ever read -- while session.py went on dispatching every tool call into that
+    same dropped agent's run_tool. The names cannot match, so the caller got an
+    agent that answered the phone and could do nothing, and no log anywhere
+    said the word AGENT_FACTORY.
+
+    Mutation: deleting the raise from build_session_update kills this.
+    """
+    from calling_agent.agent_config import AgentModeConflict
+
+    monkeypatch.setattr(settings, "agent_id", "agent-abc")
+    monkeypatch.setattr(settings, "agent_factory", "test_agent_spec:_dairy_factory")
+
+    with pytest.raises(AgentModeConflict) as refusal:
+        build_session_update(p.ENCODING_PCM, agent=_dairy_factory({}))
+
+    mensaje = str(refusal.value)
+    # Both names, because knowing only one of them does not say what to change.
+    assert "AGENT_ID" in mensaje and "AGENT_FACTORY" in mensaje
+    assert "agent-abc" in mensaje
+    assert "Unset" in mensaje
+
+
+def test_a_resumed_connection_refuses_the_same_conflict(monkeypatch):
+    """A resume sends no session config, so nothing here can be 'resolved'.
+
+    The tool calls that follow are dispatched into the local agent just the
+    same, and on a serverless host the reconnect can be the FIRST thing a
+    process sees -- so it cannot be the one path that carries on regardless.
+    """
+    from calling_agent.agent_config import AgentModeConflict, build_session_resume
+
+    monkeypatch.setattr(settings, "agent_id", "agent-abc")
+    monkeypatch.setattr(settings, "agent_factory", "test_agent_spec:_dairy_factory")
+
+    with pytest.raises(AgentModeConflict):
+        build_session_resume("s-earlier")
+
+
+def test_a_factory_only_deployment_is_untouched_by_the_guard(monkeypatch):
+    """The guard is about the PAIR. A factory alone is the supported case --
+    the reason this relay exists -- and must not acquire a new way to fail.
+
+    Mutation: widening the guard to fire on AGENT_FACTORY alone kills this.
+    """
+    monkeypatch.setattr(settings, "agent_id", "")
+    monkeypatch.setattr(settings, "agent_factory", "test_agent_spec:_dairy_factory")
+
+    session = build_session_update(
+        p.ENCODING_PCM, agent=_definition(build_prompt=lambda: "DAIRY PROMPT")
+    )["session"]
+    assert session["system_prompt"] == "DAIRY PROMPT"
+    assert [tool["name"] for tool in session["tools"]] == ["other_tool"]
+
+
+def test_a_stored_agent_alone_still_sends_only_its_id(monkeypatch):
+    """The other supported deployment, from the same guard's blind side."""
+    monkeypatch.setattr(settings, "agent_id", "agent-abc")
+    monkeypatch.setattr(settings, "agent_factory", "")
+
+    assert build_session_update(p.ENCODING_PCM)["session"] == {"agent_id": "agent-abc"}
+
+
+@pytest.mark.asyncio
+async def test_the_conflict_reaches_the_caller_before_the_call_is_billed(monkeypatch):
+    """Loud, and before the socket.
+
+    The upstream is billed by the minute and this session cannot work, so the
+    refusal happens before connecting -- and it reaches the page, because the
+    symptom ("No tool named X" on every single call) names nothing at all.
+
+    Mutation: deleting the pre-check from run() kills this -- the session then
+    tries to connect and reports a network error that says nothing about
+    either variable.
+    """
+    monkeypatch.setattr(settings, "assemblyai_api_key", "test-key")
+    monkeypatch.setattr(settings, "assemblyai_agent_ws_url", "ws://127.0.0.1:1/nothing-here")
+    monkeypatch.setattr(settings, "agent_id", "agent-abc")
+    monkeypatch.setattr(settings, "agent_factory", "test_agent_spec:_dairy_factory")
+
+    transporte = _TransporteQueRegistra()
+    await AgentSession(transporte, agent=_dairy_factory({})).run()
+
+    assert transporte.closed
+    assert len(transporte.events) == 1
+    aviso = transporte.events[0]
+    assert aviso["type"] == "error"
+    assert aviso["fatal"] is True
+    assert "AGENT_ID" in aviso["message"] and "AGENT_FACTORY" in aviso["message"]
+
+
 def test_diagnose_reports_which_agent_it_built(monkeypatch):
     """Mutation: calling run_diagnostics() without the agent kills this."""
     from fastapi.testclient import TestClient

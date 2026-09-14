@@ -8,7 +8,9 @@ LLM and TTS work happens upstream.
 import asyncio
 import json
 import logging
-from time import perf_counter
+from collections import OrderedDict
+from time import monotonic, perf_counter
+from typing import Any
 
 import websockets
 from websockets.asyncio.client import ClientConnection
@@ -17,6 +19,7 @@ from . import protocol as p
 from .agent_config import (
     FALLBACK_VOICE,
     RESTAURANT,
+    agent_mode_conflict,
     build_session_resume,
     build_session_update,
 )
@@ -28,6 +31,136 @@ log = logging.getLogger(__name__)
 
 # How long to wait for reply.done before sending queued tool results anyway.
 TOOL_RESULT_TIMEOUT = 2.0
+
+# --- Tool results, which have to outlive the connection that produced them ---
+#
+# A reconnect builds a NEW AgentSession -- main.ws() constructs one per socket,
+# including for ?resume=<id> -- so a cache held on the instance is empty on
+# exactly the reconnect it exists to protect. The upstream session outlives the
+# dropped socket, re-issues the tool call it never got an answer to, the cache
+# misses, and a tool with a side effect runs twice: a second booking against
+# the same seats, for a caller who said "book it" once.
+#
+# So the cache lives out here, keyed by the upstream session id that ?resume=
+# names, and a session borrows the one belonging to its call. Scoping is the
+# point: one call's results are reachable only through that call's id, never
+# from another conversation.
+#
+# It is process-global state on a long-lived server, so it is bounded three
+# ways -- how many sessions are remembered, how many calls within a session,
+# and for how long. Everything here runs on the event loop, never in the tool
+# worker thread, so it needs no lock.
+
+CACHED_SESSIONS = 64
+CACHED_CALLS_PER_SESSION = 32
+# Generous next to the ~30s the API holds a session open after a drop, and
+# still short enough that a busy server forgets a finished call quickly.
+CACHE_TTL_SECONDS = 300.0
+
+
+class SessionToolResults:
+    """Tool results for ONE upstream session. Two jobs, both about a tool
+    that has ALREADY RUN and must not run again.
+
+    `get`/`remember` answer a re-issued call from what the first run returned,
+    instead of repeating its side effect.
+
+    `hold`/`release` carry results that never reached the upstream across the
+    drop. Those tools ran; the upstream is still waiting on their call_ids and
+    on a resume it is still waiting, so throwing the results away (which is
+    what the teardown used to do) strands the call rather than losing a detail.
+    """
+
+    def __init__(self, max_calls: int = CACHED_CALLS_PER_SESSION) -> None:
+        self._max_calls = max_calls
+        self._results: OrderedDict[str, dict] = OrderedDict()
+        self._undelivered: list[dict] = []
+        self.touched = monotonic()
+
+    def get(self, call_id: str) -> dict | None:
+        payload = self._results.get(call_id)
+        if payload is not None:
+            self._results.move_to_end(call_id)
+        return payload
+
+    def remember(self, call_id: str, payload: dict) -> None:
+        # An empty id is the provider omitting one, not an identity: two
+        # unrelated calls both arrive as "", so a result recorded under it
+        # would answer the second of them with the first one's answer. This is
+        # the one door into `_results`, so refusing here is what makes `get`
+        # safe for an id that is not one -- and guarding both ends instead
+        # would leave neither guard able to fail a test on its own.
+        if not call_id:
+            return
+        self._results[call_id] = payload
+        self._results.move_to_end(call_id)
+        # Oldest call in this conversation first. A re-issue follows its
+        # original within a turn or two, so the horizon that matters is a
+        # handful of calls; this bound is an order of magnitude past it.
+        while len(self._results) > self._max_calls:
+            self._results.popitem(last=False)
+
+    def hold(self, payloads: list[dict]) -> None:
+        """Keep results that have not reached the upstream yet."""
+        if not payloads:
+            return
+        self._undelivered.extend(payloads)
+        del self._undelivered[: -self._max_calls]
+
+    def release(self) -> list[dict]:
+        """Take everything held, to deliver on a session that is live again."""
+        held, self._undelivered = self._undelivered, []
+        return held
+
+
+class ToolResultStore:
+    """Every recent session's results, keyed by upstream session id."""
+
+    def __init__(
+        self, max_sessions: int = CACHED_SESSIONS, ttl: float = CACHE_TTL_SECONDS
+    ) -> None:
+        self._max_sessions = max_sessions
+        self._ttl = ttl
+        self._sessions: OrderedDict[str, SessionToolResults] = OrderedDict()
+
+    def claim(self, session_id: str | None) -> SessionToolResults:
+        """The cache for `session_id`, created on first sight of it.
+
+        A connection that has no id yet -- every fresh call, until session.ready
+        names one -- gets a private cache, which `bind` registers as soon as
+        the id arrives. It is never a shared bucket: an unidentified call must
+        not be able to see another call's results.
+        """
+        if not session_id:
+            return SessionToolResults()
+        cache = self._sessions.get(session_id) or SessionToolResults()
+        self.bind(session_id, cache)
+        return cache
+
+    def bind(self, session_id: str, cache: SessionToolResults) -> None:
+        """Make `session_id` name this cache, so a later ?resume= finds it.
+
+        The API may answer a resume with a different session id from the one
+        that was resumed; binding both to the same cache keeps the chain
+        unbroken across a second drop.
+        """
+        if not session_id:
+            return
+        cache.touched = monotonic()
+        self._sessions[session_id] = cache
+        self._sessions.move_to_end(session_id)
+        self._expire()
+
+    def _expire(self) -> None:
+        cutoff = monotonic() - self._ttl
+        for session_id, cache in list(self._sessions.items()):
+            if cache.touched < cutoff:
+                del self._sessions[session_id]
+        while len(self._sessions) > self._max_sessions:
+            self._sessions.popitem(last=False)  # least recently touched
+
+
+TOOL_RESULTS = ToolResultStore()
 
 
 class AgentSession:
@@ -65,13 +198,29 @@ class AgentSession:
         # One ordered worker owns tool execution. Awaiting a threaded tool in
         # the audio reader still blocks that reader; a separate queue does not.
         self._tool_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=16)
-        self._tool_cache: dict[str, dict] = {}
+        # Borrowed, not owned: this object is THIS CALL's, and a reconnect for
+        # the same call gets the same one back. See ToolResultStore above for
+        # why it cannot live on the instance.
+        self._tool_cache = TOOL_RESULTS.claim(resume_session_id)
 
     async def run(self) -> None:
         """Open the upstream connection and pump audio until either side ends."""
         if not settings.assemblyai_api_key:
             await self._transport.send_event(
                 {"type": "error", "message": "ASSEMBLYAI_API_KEY is not set on the server."}
+            )
+            await self._transport.close()
+            return
+
+        # Before the socket, because this call cannot work and the upstream is
+        # billed by the minute. Without it the session opens, the agent talks,
+        # and every single tool call comes back "No tool named X" -- the one
+        # failure mode where the caller hears a working phone and nothing else
+        # in the system says a word about why it can do nothing.
+        if conflict := agent_mode_conflict(self._agent):
+            log.error("%s", conflict)
+            await self._transport.send_event(
+                {"type": "error", "fatal": True, "message": conflict}
             )
             await self._transport.close()
             return
@@ -185,7 +334,13 @@ class AgentSession:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             self._flush_guard = None
-            self._pending_tool_results.clear()
+            # These are results for tools that ALREADY RAN. Clearing them --
+            # which is what this used to do -- loses them for good: the
+            # upstream session outlives the socket, it is still waiting on
+            # those call_ids, and it does not ask twice. Hand them to the
+            # call's cache so the reconnect delivers them.
+            self._tool_cache.hold(self._pending_tool_results)
+            self._pending_tool_results = []
             self._reply_active = False
             self._tool_queue = asyncio.Queue(maxsize=16)
 
@@ -268,6 +423,18 @@ class AgentSession:
             self._ready = True
             self._session_id = msg.get("session_id")
             log.info("session ready: %s", self._session_id)
+            # Register the cache under the id the client will reconnect with.
+            # A resume may come back under a new id; both must reach the same
+            # results, or the second drop re-runs what the first one paid for.
+            if self._session_id:
+                TOOL_RESULTS.bind(self._session_id, self._tool_cache)
+            if held := self._tool_cache.release():
+                # Tools that ran on the connection that dropped. The upstream
+                # has been waiting on these since before the reconnect, and
+                # there is no reply in progress to hold them behind.
+                log.info("delivering %d held tool result(s) after reconnect", len(held))
+                self._pending_tool_results.extend(held)
+                await self._flush_tool_results(upstream)
             if self._pending_notice:
                 await self._transport.send_event(
                     {"type": "notice", "message": self._pending_notice}
@@ -304,37 +471,90 @@ class AgentSession:
             msg = await self._tool_queue.get()
             try:
                 await self._handle_tool_call(upstream, msg)
+            except Exception:
+                # This worker COMPLETING is what ends the call: _pump waits on
+                # FIRST_COMPLETED and cancels both audio directions the moment
+                # any of its three tasks finishes, so an exception here cut the
+                # caller off mid-sentence. Whatever went wrong with one tool
+                # call -- a transport that went away, a result that would not
+                # serialise -- the caller is still on the line. Log it, take
+                # the next call. `_execute_tool` has already answered the agent
+                # for anything the tool itself did.
+                log.exception("tool call %r failed; the call continues", msg.get("name"))
             finally:
                 self._tool_queue.task_done()
+
+    async def _execute_tool(self, name: str, args: dict, call_id: str) -> tuple[Any, bool]:
+        """Run one tool in a worker thread and always come back with a result.
+
+        `run_tool` is documented as not raising, but AGENT_FACTORY means the
+        implementation belongs to somebody else: a database timeout raises, and
+        returning a bare string instead of the documented (result, is_error)
+        pair makes the unpack raise here instead. Either one used to escape the
+        worker task and take the whole call down with it.
+
+        `is_error` exists so that a tool which fails is reported to the agent,
+        which can then tell the caller something true, rather than ending the
+        conversation. That is what this returns in every failing case.
+        """
+        try:
+            outcome = await asyncio.to_thread(self._agent.run_tool, name, args, call_id)
+        except Exception as exc:
+            log.exception("tool %s raised; reporting the failure to the agent", name)
+            return f"The {name} tool failed and did not complete: {exc}", True
+
+        if isinstance(outcome, tuple | list) and len(outcome) == 2:
+            result, is_error = outcome
+            return result, bool(is_error)
+        if isinstance(outcome, str):
+            # A pair is the contract; a bare string is an implementation that
+            # forgot the flag, and its text is still the real answer. Unpacking
+            # it would tear it in half rather than fail loudly -- ("ok" becomes
+            # result "o", is_error "k") -- so take it whole and say so once.
+            log.warning("tool %s returned a bare string, not (result, is_error)", name)
+            return outcome, False
+        log.error("tool %s returned %s, not (result, is_error)", name, type(outcome).__name__)
+        return f"The {name} tool answered in a way I could not read.", True
 
     async def _handle_tool_call(self, upstream: ClientConnection, msg: dict) -> None:
         name = msg.get("name", "")
         args = msg.get("arguments") or {}
-        call_id = msg.get("call_id")
-        cached = self._tool_cache.get(call_id) if call_id else None
+        # Exactly what the provider sent, or "" when it sent nothing. Never
+        # invented, renumbered or replaced with the session id: another
+        # codebase derives the idempotency key for a real side effect from this
+        # value, and an id this server made up would be a different id after a
+        # reconnect -- which turns a retry into a second order. See agent_spec.
+        call_id = str(msg.get("call_id") or "")
+        cached = self._tool_cache.get(call_id)
         if cached is not None:
+            # Already run, on the connection that dropped before its result
+            # could be delivered. Answer from the record instead of repeating
+            # the side effect.
+            log.info("tool %s (call_id=%s) answered from the session cache", name, call_id)
             self._pending_tool_results.append(cached)
         else:
             await self._transport.send_event(
                 {"type": "tool.activity", "status": "started", "name": name, "call_id": call_id}
             )
             started = perf_counter()
-            result, is_error = await asyncio.to_thread(
-                self._agent.run_tool, name, args, call_id or ""
-            )
+            result, is_error = await self._execute_tool(name, args, call_id)
             elapsed_ms = round((perf_counter() - started) * 1000)
             # Do not put caller names, phone numbers or booking notes in logs.
             log.info("tool %s completed in %dms (error=%s)", name, elapsed_ms, is_error)
 
-            payload = {
+            payload: dict[str, Any] = {
                 "type": p.TOOL_RESULT,
-                "call_id": call_id,
                 "result": result,
                 "is_error": is_error,
             }
-            self._pending_tool_results.append(payload)
+            # The API pairs a result to its call by this id. An explicit null
+            # is not the same as saying nothing: it is a value the API cannot
+            # pair with anything, so when the provider omitted the id the key
+            # is left out entirely.
             if call_id:
-                self._tool_cache[call_id] = payload
+                payload["call_id"] = call_id
+            self._pending_tool_results.append(payload)
+            self._tool_cache.remember(call_id, payload)
             # UI evidence comes from the executed tool, never a transcript guess.
             activity = {
                 "type": "tool.activity",
@@ -380,6 +600,15 @@ class AgentSession:
             and self._flush_guard is not asyncio.current_task()
         ):
             self._flush_guard.cancel()
-        for payload in queued:
-            await upstream.send(json.dumps(payload))
+        for index, payload in enumerate(queued):
+            try:
+                await upstream.send(json.dumps(payload))
+            except BaseException:
+                # The socket went, or teardown cancelled this task, partway
+                # through delivering results for tools that have already run.
+                # What is left goes back to the call's cache for the reconnect
+                # rather than onto the floor -- CancelledError included, which
+                # is why this catches BaseException and re-raises untouched.
+                self._tool_cache.hold(queued[index:])
+                raise
         log.info("sent %d tool result(s)", len(queued))
