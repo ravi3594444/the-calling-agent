@@ -4,6 +4,7 @@ Everything about *what the agent says* lives here, so the relay in session.py
 stays pure plumbing. The reservation logic itself is in restaurant.py.
 """
 
+import logging
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -13,6 +14,8 @@ from .protocol import SESSION_RESUME, SESSION_UPDATE
 from .restaurant import IMPLEMENTATIONS as TOOL_IMPLEMENTATIONS
 from .restaurant import OPENING_HOURS
 from .restaurant import TOOLS as TOOLS
+
+log = logging.getLogger(__name__)
 
 
 def _build_prompt() -> str:
@@ -171,6 +174,64 @@ KNOWN_VOICES: dict[str, str] = {
 FALLBACK_VOICE = "ivy"
 
 
+class AgentModeConflict(RuntimeError):
+    """A stored agent and a locally defined agent are both configured.
+
+    Raised rather than resolved, because resolving it is what made the failure
+    invisible: the payload silently became the stored agent's while tool
+    dispatch stayed with the local one.
+    """
+
+
+def agent_mode_conflict(agent: AgentDefinition | None = None) -> str | None:
+    """Why this deployment cannot serve a stored agent AND a local one.
+
+    Returns the message to show, or None when the configuration is coherent.
+
+    Each mode alone is supported and neither is touched here. AGENT_ID alone is
+    the stored-agent deployment: AssemblyAI holds the prompt, greeting and tool
+    declarations, and this server implements those tool names. AGENT_FACTORY
+    alone is the whole point of the factory -- another codebase serving its own
+    agent through this relay.
+
+    Only the PAIR is broken, and it is broken silently. `build_session_update`
+    returns early in stored-agent mode, so the local agent's prompt, greeting,
+    tools and voice are all discarded before they are ever used -- but
+    `session.py` still dispatches every tool call into that same discarded
+    agent's `run_tool`. The stored agent's tool names cannot match the local
+    agent's, so every call comes back "No tool named X": an agent that can do
+    nothing, with no error anywhere naming the cause.
+    """
+    if not settings.agent_id:
+        return None
+
+    factory = settings.agent_factory.strip()
+    if factory:
+        origin = f"AGENT_FACTORY ({factory})"
+        remedy = (
+            "Unset AGENT_ID to keep serving the factory's agent, or unset "
+            "AGENT_FACTORY to use the stored one."
+        )
+    elif agent is not None and agent is not RESTAURANT:
+        # No factory, but a consumer constructed a session with its own agent.
+        # Same breakage, reached through the library rather than the env.
+        origin = f"an agent passed in directly ({agent.name!r})"
+        remedy = (
+            "Unset AGENT_ID to keep serving that agent, or stop passing one to "
+            "use the stored agent."
+        )
+    else:
+        return None
+
+    return (
+        f"AGENT_ID ({settings.agent_id}) and {origin} are both configured, and "
+        "the two modes are mutually exclusive. A stored agent's prompt, "
+        "greeting, tools and voice come from AssemblyAI, so the local agent's "
+        "are ignored -- but its run_tool still receives every tool call, and "
+        f"the tool names cannot match, so the agent can do nothing. {remedy}"
+    )
+
+
 def build_session_update(
     encoding: str,
     *,
@@ -191,7 +252,14 @@ def build_session_update(
     block: it is the newest and least-documented part of the payload, and a
     single unknown field there is rejected with 1008, taking down the whole
     session rather than just that setting.
+
+    Refuses to build a contradictory payload: see `agent_mode_conflict`. The
+    check is here, before `agent` is defaulted, because this function is where
+    the two modes used to be silently resolved in favour of one.
     """
+    if conflict := agent_mode_conflict(agent):
+        raise AgentModeConflict(conflict)
+
     agent = agent or RESTAURANT
 
     # Stored-agent mode: agent_id must be the only field in `session`.
@@ -233,7 +301,14 @@ def build_session_resume(session_id: str) -> dict[str, Any]:
     platform that closes connections on a timer (any serverless function), this
     is what turns a forced disconnect into a seam the caller does not hear
     rather than a dropped call.
+
+    A resume sends no session config, so nothing here can be "resolved in
+    favour of" a stored agent -- but the tool calls that follow are dispatched
+    into the local agent just the same, so a contradictory deployment is
+    exactly as broken on a reconnect as on a first connection.
     """
+    if conflict := agent_mode_conflict():
+        raise AgentModeConflict(conflict)
     return {"type": SESSION_RESUME, "session_id": session_id}
 
 
@@ -248,3 +323,13 @@ RESTAURANT = AgentDefinition(
     tools=TOOLS,
     run_tool=run_tool,
 )
+
+
+# Loud at startup, where a deployment variable is still fresh in someone's
+# mind -- not on the first call, as a caller listening to an agent that says
+# it cannot do anything. Logged rather than raised: an import that raises
+# takes down /healthz and the whole process with it, and this same conflict is
+# refused again, by name, the moment a session is actually built.
+_CONFLICT_AT_IMPORT = agent_mode_conflict()
+if _CONFLICT_AT_IMPORT:
+    log.error("%s", _CONFLICT_AT_IMPORT)

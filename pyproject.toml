@@ -24,8 +24,34 @@ dev = [
 requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+# `static/` is the browser client and it lives at the repo root, beside `src/`,
+# so it is not inside the package tree and a plain `pip install .` used to
+# leave it behind: the wheel had no UI, and `_static_dir()` in main.py fell
+# through to a path that cannot exist. Mapping it in as `calling_agent.static`
+# ships it inside the wheel without moving the directory, which keeps the
+# checkout layout (`make dev`, Docker, Vercel's `includeFiles`) unchanged.
+#
+# It is the LOWEST-precedence source. `_static_dir()` still prefers STATIC_DIR
+# and then the repo root, so a deployment that installs this relay and points
+# STATIC_DIR at its own copy keeps serving its own pages, not these.
+#
+# Listing packages explicitly is what the `static` mapping costs: `find` cannot
+# discover a package outside `where`. test_packaging.py asserts the list stays
+# complete.
+packages = [
+    "calling_agent",
+    "calling_agent.transport",
+    "calling_agent.static",
+]
+
+[tool.setuptools.package-dir]
+"" = "src"
+"calling_agent.static" = "static"
+
+[tool.setuptools.package-data]
+# Recursive: js/ and fonts/ are not packages and must not need to be.
+"calling_agent.static" = ["**/*"]
 
 [tool.ruff]
 line-length = 100

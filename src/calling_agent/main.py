@@ -1,13 +1,14 @@
 """FastAPI app: serves the browser client and bridges its audio to the agent."""
 
+import asyncio
 import importlib
 import logging
 import os
 from collections.abc import Mapping
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Response, WebSocket
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from .agent_config import KNOWN_VOICES, RESTAURANT
@@ -26,14 +27,22 @@ log = logging.getLogger("calling_agent")
 def _static_dir() -> Path:
     """Where the browser client lives, from a checkout OR an installed wheel.
 
-    `parents[2]` is the repo root from `src/calling_agent/main.py` and works
-    for a checkout and an editable install. Installed normally the same
-    expression points at `site-packages/../..`, so StaticFiles raises at
-    import and the server does not start at all -- the failure mode when
-    another project installs this package to serve its own agent through it.
+    Three sources, in this order, and the order is the contract:
 
-    STATIC_DIR names the directory explicitly, which is what a container that
-    pip-installs from git needs.
+    1. STATIC_DIR, when set. A deployment serving its own agent through this
+       relay points it at its own copy of the client, and writing one file
+       into that directory replaces one page. It must keep winning: the copy
+       below now exists in every install, and if it could outrank the override
+       such a deployment would silently serve OUR pages to ITS callers.
+    2. `parents[2]`, the repo root from `src/calling_agent/main.py`. This is
+       the checkout and the editable install -- `make dev`, the tests, and
+       Vercel, which puts the source tree and `static/` side by side.
+    3. `static/` inside the package. `pip install .` ships it there (see
+       [tool.setuptools] in pyproject.toml). Before that it shipped nowhere:
+       both branches above missed, this one named a directory that could not
+       exist, and the installed server answered /healthz while every page load
+       failed. Lowest precedence on purpose -- it is the fallback for an
+       install with nothing configured, not an override of anyone's choice.
     """
     override = os.getenv("STATIC_DIR", "").strip()
     if override:
@@ -57,12 +66,11 @@ def _mount_static(app: FastAPI, directory: Path) -> bool:
     and a consumer's tests could not even import the module to check anything
     else.
 
-    And a plain `pip install` lands exactly there: the wheel does not ship
-    `static/` (it lives at the repo root, beside `src/`, not inside the
-    package), so with no STATIC_DIR set both branches of `_static_dir` miss and
-    the last resort points at a directory that cannot exist. The docstring
-    above has described this failure since the day the override was added --
-    the override dodges it, it never stopped being true without one.
+    A plain `pip install` used to land exactly there: the wheel did not ship
+    `static/`, so with no STATIC_DIR set every branch of `_static_dir` missed.
+    The wheel carries it now, which makes this a mount that normally succeeds
+    -- but it is still allowed to fail, because STATIC_DIR can name a
+    directory that is not there and a source tree can be deployed without one.
 
     A missing UI must cost the UI. The websocket, `/healthz` and every agent
     this relay carries do not read a single file from here; the browser client
@@ -123,6 +131,31 @@ def _build_agent(params: Mapping[str, str] | None = None) -> AgentDefinition | N
     return agent
 
 
+async def _build_agent_async(params: Mapping[str, str] | None = None) -> AgentDefinition | None:
+    """`_build_agent` off the event loop. Every request path uses this one.
+
+    AGENT_FACTORY is arbitrary third-party code, and its documented use --
+    bind the agent to its caller -- is a lookup: a row, an HTTP call, a file
+    read. Called on the loop it does not merely delay the connection asking
+    for it, it stops the audio pump of every OTHER call in the process for as
+    long as the lookup takes, and the first one to arrive pays
+    `importlib.import_module` (disk I/O) on the same thread. `run_tool` has
+    gone through `asyncio.to_thread` for exactly this reason since the tool
+    worker existed; this was the other door synchronous foreign code came in
+    through, and it was open on `/experience` -- once per page load -- as well
+    as on every websocket connection.
+
+    Unset AGENT_FACTORY stays on the loop: there is nothing to run, and
+    handing a thread back and forth to answer None would be a cost every page
+    load pays for a feature nobody configured. The fallbacks are `_build_agent`'s
+    and are unchanged, deliberately: a factory that raises still serves the
+    default agent rather than dropping the call.
+    """
+    if not settings.agent_factory.strip():
+        return None
+    return await asyncio.to_thread(_build_agent, params)
+
+
 @app.get("/healthz")
 async def healthz() -> dict:
     """Liveness probe. Reports config validity without leaking the key."""
@@ -153,7 +186,7 @@ async def experience() -> dict:
     that varies by caller answers for its default caller — which is all a page
     can ask before anyone has called.
     """
-    agente = _build_agent() or RESTAURANT
+    agente = await _build_agent_async() or RESTAURANT
     return {
         "restaurant": agente.display_name or settings.restaurant_name,
         "agent": agente.name,
@@ -174,12 +207,36 @@ async def diagnose() -> dict:
     # The CONFIGURED agent, not the restaurant: diagnosing a payload that no
     # live call ever sends is how /diagnose reports a healthy session while
     # every real one is refused for a malformed prompt or tool declaration.
-    return await run_diagnostics(agent=_build_agent())
+    return await run_diagnostics(agent=await _build_agent_async())
+
+
+_SIN_CLIENTE = (
+    "The browser client is not deployed on this instance.\n"
+    "The API, /healthz and the /ws relay are unaffected.\n"
+    "Set STATIC_DIR to the directory holding index.html to serve the UI.\n"
+)
 
 
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+async def index() -> Response:
+    """Serve the browser client, or say plainly that it is not deployed.
+
+    `_mount_static` decided a missing `static/` costs the UI and not the
+    process -- then this route handed the same missing path to FileResponse,
+    which raises while the response is being written, so the one URL a human
+    opens first answered 500 with a traceback for a condition the module had
+    already called survivable. Half an invariant is not one: the directory is
+    checked here too.
+
+    503, not 404: the page is missing because this deployment has no copy of
+    it, which is a deployment fact an operator can fix, not a URL that does
+    not exist. The body names STATIC_DIR and nothing else -- the path it
+    resolved to goes in the log, not to the public.
+    """
+    page = STATIC_DIR / "index.html"
+    if not page.is_file():
+        return PlainTextResponse(_SIN_CLIENTE, status_code=503)
+    return FileResponse(page)
 
 
 # Browsers request these regardless of the inline <link rel="icon">, and the
@@ -187,8 +244,17 @@ async def index() -> FileResponse:
 # load logs two 404s.
 @app.get("/favicon.ico")
 @app.get("/favicon.png")
-async def favicon() -> FileResponse:
-    return FileResponse(STATIC_DIR / "favicon.svg", media_type="image/svg+xml")
+async def favicon() -> Response:
+    """404 when there is no icon, rather than a 500 from FileResponse.
+
+    404 and not 503 like `/`: a browser asking for an icon this deployment
+    does not have gets the answer it already knows how to handle and caches.
+    Whether the UI is deployed at all is `/`'s answer to give, once.
+    """
+    icon = STATIC_DIR / "favicon.svg"
+    if not icon.is_file():
+        return Response(status_code=404)
+    return FileResponse(icon, media_type="image/svg+xml")
 
 
 @app.websocket("/ws")
@@ -213,7 +279,7 @@ async def ws(websocket: WebSocket, resume: str | None = None, voice: str | None 
         BrowserTransport(websocket),
         resume_session_id=resume,
         voice=voice,
-        agent=_build_agent(websocket.query_params),
+        agent=await _build_agent_async(websocket.query_params),
     ).run()
     log.info("session for %s ended", client)
 

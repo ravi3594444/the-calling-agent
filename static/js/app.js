@@ -226,9 +226,23 @@ const actionNames = {
   recommend_dishes: 'Finding recommendations',
 };
 
+// The provider may omit call_id, and the relay forwards it verbatim, so it
+// arrives as null. Keyed on that, two tools in one turn share one card and the
+// second overwrites the first's result in place. CallSession resolves one key
+// per live tool call (toolKey there) and the demo supplies its own id; give
+// anything still unkeyed a card of its own rather than somebody else's.
+let anonymousActions = 0;
+function actionKey(event) {
+  if (event.tool_key) return event.tool_key;
+  const id = event.call_id;
+  if (id !== null && id !== undefined && id !== '') return 'id:' + id;
+  return (event.tool_key = 'card:' + ++anonymousActions);
+}
+
 function addAction(event) {
   $('transcript-empty').hidden = true;
-  let node = actionNodes.get(event.call_id);
+  const key = actionKey(event);
+  let node = actionNodes.get(key);
   if (!node) {
     node = document.createElement('div');
     node.className = 'action';
@@ -242,7 +256,7 @@ function addAction(event) {
     heading.append(mark, name);
     node.append(heading, document.createElement('p'));
     $('log').append(node);
-    actionNodes.set(event.call_id, node);
+    actionNodes.set(key, node);
   }
   node.dataset.status = event.status;
   node.querySelector('p').textContent =
@@ -489,6 +503,15 @@ document.addEventListener('keydown', (event) => {
 window.addEventListener('pagehide', () => {
   if (controller.active) controller.stop();
 });
+// A browser suspends the audio context when the tab goes to the background, on
+// an incoming call, on any audio interruption. That pauses a call; it must
+// never end one. A returning tab or a tap is the gesture iOS wants before it
+// will let the context run again.
+const resumeAudio = () => live.resumeAudio?.();
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) resumeAudio();
+});
+document.addEventListener('pointerdown', resumeAudio, { passive: true });
 
 async function boot() {
   const results = await Promise.allSettled([

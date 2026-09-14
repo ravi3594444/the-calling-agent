@@ -37,7 +37,35 @@ export class CallSession {
 
   state(phase, message = '') {
     this.phase = phase;
-    this.emit({ type: 'state', phase, message, active: this.active });
+    this.safeEmit({ type: 'state', phase, message, active: this.active });
+  }
+
+  // The page's renderer runs inside our socket handler, so a TypeError while
+  // rendering one unexpected payload used to reach the catch in onmessage and
+  // hang up the call. A rendering bug is a bug; it is never a reason to
+  // disconnect a phone call and release the microphone.
+  safeEmit(event) {
+    try {
+      this.emit(event);
+    } catch (error) {
+      globalThis.console?.error?.('Rendering failed for ' + (event?.type || 'event'), error);
+    }
+  }
+
+  // Ends the call with the reason it actually failed for, instead of replacing
+  // it with a generic sentence that sends everyone looking in the wrong place.
+  unreadable(error) {
+    this.stop(
+      'The connection returned something this page could not read: ' +
+        (error?.message || String(error)),
+      true,
+    );
+  }
+
+  // A returning tab or a tap can restart a context the browser suspended.
+  // Nothing here can end the call, however it turns out.
+  resumeAudio() {
+    this.audio?.resume();
   }
 
   async start(voice) {
@@ -53,6 +81,8 @@ export class CallSession {
     this.hearing = false;
     this.waitingAt = null;
     this.pendingTools = new Set();
+    this.anonymousOpen = [];
+    this.anonymousTools = 0;
     this.muted = false;
     this.state('connecting', 'Allow your microphone to start the conversation.');
     this.setupAbort = new AbortController();
@@ -86,6 +116,14 @@ export class CallSession {
       },
       onError: (error) => {
         if (this.active && generation === this.generation) this.stop(error.message, true);
+      },
+      // Recoverable trouble inside playback -- an interrupted audio context, a
+      // resynchronised backlog. A message reports it, an empty one means it is
+      // over and the normal state line comes back. Neither ends the call.
+      onNotice: (message) => {
+        if (!this.active || generation !== this.generation) return;
+        if (message) this.safeEmit({ type: 'notice', message });
+        else this.restingState();
       },
     });
     this.audio = audio;
@@ -155,12 +193,21 @@ export class CallSession {
     // WebSocket.open is only the relay connection. session.ready is the agent.
     socket.onmessage = (message) => {
       if (!current()) return;
+      let packet;
       try {
-        const packet = JSON.parse(message.data);
+        packet = JSON.parse(message.data);
+      } catch (error) {
+        this.unreadable(error);
+        return;
+      }
+      // Only reading the packet and our own dispatch are protected. Everything
+      // the page renders happens inside safeEmit and cannot reach this catch:
+      // a missing field in one receipt must not end the conversation.
+      try {
         if (packet.type === 'audio' && this.ready) {
           const delay = this.audio.play(packet.data);
           if (delay !== null && this.waitingAt !== null) {
-            this.emit({
+            this.safeEmit({
               type: 'latency',
               milliseconds: Math.round(this.clock() - this.waitingAt + delay),
             });
@@ -171,8 +218,8 @@ export class CallSession {
         } else if (packet.type === 'event' && packet.event) {
           this.handleEvent(packet.event);
         }
-      } catch {
-        this.stop('The audio connection returned an invalid response. Please start again.', true);
+      } catch (error) {
+        this.unreadable(error);
       }
     };
     socket.onerror = () => {
@@ -213,18 +260,52 @@ export class CallSession {
         // Generation may end seconds before the scheduled audio drains.
         if (!this.audio.playing && !this.audio.sources?.size) this.restingState();
         break;
-      case 'tool.activity':
-        if (event.status === 'started') this.pendingTools.add(event.call_id);
-        else this.pendingTools.delete(event.call_id);
+      case 'tool.activity': {
+        // The provider may omit call_id and the relay forwards it verbatim, so
+        // it arrives as null. Keyed on that, two tools in one turn share one
+        // entry: the first completion drops out of `working` while the second
+        // tool is still running, and the second tool's card overwrites the
+        // first's. Resolve one key per tool call and stamp it on the event so
+        // every consumer keys on the same thing.
+        const key = (event.tool_key = this.toolKey(event));
+        if (event.status === 'started') this.pendingTools.add(key);
+        else this.pendingTools.delete(key);
         if (!this.audio.playing) this.restingState();
         break;
+      }
       case 'session.error':
       case 'error':
-        if (event.fatal === false && this.sessionId) this.disconnect(this.socket, this.generation);
+        // Only an error the server LABELLED fatal ends the call. It forwards
+        // upstream frames verbatim and those carry no `fatal` key at all, so
+        // `=== false` read every one of them as fatal and hung up sessions
+        // that would have survived. Guessing wrong this way costs one
+        // reconnect; guessing wrong the other way costs the call -- and if the
+        // session really is gone, the socket close and the readiness timeout
+        // still end it inside the resume budget.
+        if (event.fatal !== true && this.sessionId) this.disconnect(this.socket, this.generation);
         else this.stop(event.message || 'The host could not connect. Please try again.', true);
         return;
     }
-    this.emit(event);
+    this.safeEmit(event);
+  }
+
+  // A call_id when there is one, otherwise a minted key: a completion pairs
+  // with the oldest still-running tool of the same name, and falls back to the
+  // oldest of any name. Ids and minted keys live in separate namespaces so one
+  // can never be mistaken for the other.
+  toolKey(event) {
+    const id = event.call_id;
+    if (id !== null && id !== undefined && id !== '') return 'id:' + id;
+    const name = event.name || '';
+    if (event.status === 'started') {
+      const key = 'anon:' + ++this.anonymousTools;
+      this.anonymousOpen.push({ key, name });
+      return key;
+    }
+    const index = this.anonymousOpen.findIndex((entry) => entry.name === name);
+    const match =
+      index === -1 ? this.anonymousOpen.shift() : this.anonymousOpen.splice(index, 1)[0];
+    return match ? match.key : 'anon:' + ++this.anonymousTools;
   }
 
   restingState() {
@@ -250,6 +331,7 @@ export class CallSession {
     this.replyActive = false;
     this.hearing = false;
     this.pendingTools.clear();
+    this.anonymousOpen = [];
     this.audio.clear();
     try {
       socket.close();

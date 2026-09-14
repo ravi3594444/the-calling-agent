@@ -6,12 +6,17 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Dependencies first so code edits don't invalidate the install layer.
+# `static/` is copied BEFORE the install, not after it: the browser client
+# ships inside the wheel (see [tool.setuptools] in pyproject.toml), so it has
+# to be present in the directory pip builds from. Copied afterwards it was
+# simply absent from the installed package, and since nothing here sets
+# STATIC_DIR the container answered /healthz 200 while every page load was a
+# 500. The copy at /app/static is left in place so STATIC_DIR=/app/static
+# still names a real directory, but nothing needs it now.
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
-RUN pip install --no-cache-dir .
-
 COPY static/ ./static/
+RUN pip install --no-cache-dir .
 
 # Run unprivileged.
 RUN useradd --create-home --shell /usr/sbin/nologin agent && chown -R agent:agent /app

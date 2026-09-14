@@ -39,16 +39,38 @@ class AgentDefinition:
     tools: list[dict[str, Any]]
 
     #: (name, arguments, call_id) -> (result, is_error). Runs in a worker
-    #: thread, so it may block; it must not raise, because the API wants an
-    #: error flagged rather than a dropped call.
+    #: thread, so it may block. It should not raise -- the API wants an error
+    #: flagged rather than a dropped call -- but the relay no longer takes that
+    #: on trust: anything raised here, and anything returned that is not the
+    #: documented pair, becomes an error result for the agent instead of ending
+    #: the call. `is_error` is what lets the agent say something sensible to
+    #: the caller rather than going quiet.
     #:
     #: `call_id` identifies ONE tool call within the session, and it is here
     #: because an agent whose tools have side effects needs to tell a repeat of
     #: the same call from a second, different one. Without it the only
     #: identifier available is the session, which is the same for every call in
     #: a conversation: an agent that keyed an order on it would answer the
-    #: caller's second order with their first. It may be empty if the provider
-    #: omits it, so treat it as a hint and not a guarantee.
+    #: caller's second order with their first.
+    #:
+    #: IT IS A CONTRACT, NOT A DETAIL. Another codebase derives the idempotency
+    #: key for a real side effect (creating a customer order) from this value,
+    #: so all three of these hold and none of them may be "simplified":
+    #:
+    #:  * It is the PROVIDER'S id, passed through verbatim. The relay never
+    #:    invents one, never renumbers, never substitutes the session id and
+    #:    never uses a counter. An id this server made up would be a different
+    #:    id after a reconnect, which turns a retry into a second order.
+    #:  * It is STABLE ACROSS A RECONNECT, which is what makes it useful: a
+    #:    dropped socket is the same call, the upstream session outlives it and
+    #:    re-issues the tool call it never got an answer to under the same
+    #:    call_id. (The relay answers such a re-issue from its own per-session
+    #:    cache, keyed on the same value, so the side effect runs once even if
+    #:    the agent's own tools are not idempotent.)
+    #:  * It MAY BE EMPTY, when the provider omits it -- and empty is the
+    #:    ABSENCE of an id, never an identity. Two unrelated calls can both
+    #:    arrive as "", so anything keyed on the empty string merges them into
+    #:    one. Treat it as a hint: no id, no idempotency, just run the tool.
     run_tool: Callable[[str, dict[str, Any], str], tuple[str, bool]]
 
     #: Overrides AGENT_VOICE for this agent. None means use the configured one.

@@ -1,6 +1,11 @@
 export const SAMPLE_RATE = 24000;
 export const PLAYBACK_CUSHION = 0.02;
 const MAX_PLAYBACK_SECONDS = 15;
+// A browser that suspends the audio context has PAUSED the call, not ended it.
+// These two lines are what the caller sees while it recovers.
+export const PAUSED_NOTICE =
+  'Audio is paused by your browser. Return to this tab, or tap the page, to keep listening.';
+export const RESYNC_NOTICE = 'Audio fell behind and skipped ahead to catch up.';
 
 export function pcmToBase64(pcm) {
   const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);
@@ -31,10 +36,16 @@ function abortError() {
 }
 
 export class CallAudio {
-  constructor({ onFrame, onPlayback, onError }) {
+  // onError ends the call. onNotice does not: it reports a recoverable state
+  // (an interrupted context, a resynchronised backlog) and an empty message
+  // means the trouble is over. Nothing in playback may reach onError.
+  constructor({ onFrame, onPlayback, onError, onNotice = () => {} }) {
     this.onFrame = onFrame;
     this.onPlayback = onPlayback;
     this.onError = onError;
+    this.onNotice = onNotice;
+    this.notice = '';
+    this.resuming = false;
     this.sources = new Set();
     this.nextPlayAt = 0;
     this.closed = false;
@@ -128,11 +139,22 @@ export class CallAudio {
     const pcm = base64ToPCM(value);
     if (!pcm.length) return null;
     const ctx = this.ctx;
+    // iOS Safari and Android Chrome suspend the context on an app switch, an
+    // incoming notification, or any audio interruption. play() runs inside the
+    // socket handler, so throwing here hangs up a live phone call and releases
+    // the microphone. Drop the frame we cannot schedule -- stale speech is
+    // worse than a gap -- ask the context to come back, and report a state the
+    // caller can recover from.
     if (ctx.state !== 'running') {
-      throw new Error('Audio was paused by your browser. Start a new conversation to resume.');
+      if (this.notify(PAUSED_NOTICE)) this.resume();
+      return null;
     }
+    if (this.notice === PAUSED_NOTICE) this.notify(''); // the interruption is over
+    // Scheduled audio this far ahead stopped being a live conversation. Drop
+    // the backlog and carry on from now rather than ending the call.
     if (this.nextPlayAt - ctx.currentTime > MAX_PLAYBACK_SECONDS) {
-      throw new Error('Audio has fallen behind. Please start a new conversation.');
+      this.clear();
+      this.notify(RESYNC_NOTICE);
     }
     const buffer = ctx.createBuffer(1, pcm.length, SAMPLE_RATE);
     const channel = buffer.getChannelData(0);
@@ -165,6 +187,31 @@ export class CallAudio {
       }
     };
     return delay * 1000;
+  }
+
+  // Reports a recoverable condition once, and says whether it is new.
+  notify(message) {
+    if (message === this.notice) return false;
+    this.notice = message;
+    this.onNotice(message);
+    return true;
+  }
+
+  // Ask a suspended context to start again: on a returning tab, on a tap, and
+  // once per interruption. iOS only allows it from a user gesture, which is
+  // what PAUSED_NOTICE asks the caller for.
+  resume() {
+    const ctx = this.ctx;
+    if (this.closed || !ctx || this.resuming) return;
+    if (ctx.state === 'running' || ctx.state === 'closed') return;
+    this.resuming = true;
+    Promise.resolve()
+      .then(() => ctx.resume?.())
+      .catch(() => {})
+      .then(() => {
+        this.resuming = false;
+        if (!this.closed && this.ctx === ctx && ctx.state === 'running') this.notify('');
+      });
   }
 
   clear() {
