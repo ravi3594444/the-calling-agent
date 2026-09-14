@@ -122,8 +122,12 @@ export class CallSession {
       // over and the normal state line comes back. Neither ends the call.
       onNotice: (message) => {
         if (!this.active || generation !== this.generation) return;
-        if (message) this.safeEmit({ type: 'notice', message });
-        else this.restingState();
+        if (message) {
+          // Whatever the caller waited through, it was not the host thinking:
+          // the pause would otherwise be reported as this turn's reply time.
+          this.waitingAt = null;
+          this.safeEmit({ type: 'notice', message });
+        } else this.restingState();
       },
     });
     this.audio = audio;

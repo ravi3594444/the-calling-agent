@@ -205,8 +205,13 @@ export class CallAudio {
     if (this.closed || !ctx || this.resuming) return;
     if (ctx.state === 'running' || ctx.state === 'closed') return;
     this.resuming = true;
-    Promise.resolve()
-      .then(() => ctx.resume?.())
+    let pending;
+    try {
+      pending = ctx.resume?.();
+    } catch {
+      /* a browser that requires a gesture can refuse synchronously */
+    }
+    Promise.resolve(pending)
       .catch(() => {})
       .then(() => {
         this.resuming = false;

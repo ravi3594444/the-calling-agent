@@ -36,9 +36,13 @@ async function load({ liveConfigured = false } = {}) {
   window.VoiceField = class {
     setPhase() {}
   };
+  window.__resumed = 0;
   window.CallSession = class {
     constructor({ emit }) {
       this.emit = emit;
+      // app.js's own renderer, reached the way app.js reaches it: this is the
+      // callback app.js passed in, not a copy of it.
+      window.__handle = emit;
       this.active = false;
       this.phase = 'idle';
       this.ready = false;
@@ -63,6 +67,9 @@ async function load({ liveConfigured = false } = {}) {
     }
     setOutputMuted(value) {
       this.outputMuted = value;
+    }
+    resumeAudio() {
+      window.__resumed++;
     }
     level() {
       return 0;
@@ -197,4 +204,57 @@ test('a voice the person actually picked is sent', async () => {
   byId('voice').dispatchEvent(new window.Event('change'));
   byId('call').click();
   assert.deepEqual([...window.__voicesStarted], ['sophie']);
+});
+
+test('tool calls that arrive without ids get their own action cards', async () => {
+  // The relay forwards the provider's call_id verbatim and it can be null.
+  // Keyed on that, the second tool of a turn overwrote the first tool's card
+  // in place -- the caller watched one action's result replace another's.
+  const f = await load({ liveConfigured: true });
+  try {
+    const activity = (status, name, extra = {}) =>
+      f.window.__handle({ type: 'tool.activity', status, name, call_id: null, ...extra });
+    const cardCount = () => f.byId('log').querySelectorAll('.action').length;
+    // CallSession stamps one key per tool call; the provider's id is null.
+    activity('started', 'check_availability', { tool_key: 'anon:1' });
+    activity('started', 'get_menu', { tool_key: 'anon:2' });
+    const cards = [...f.byId('log').querySelectorAll('.action')];
+    assert.equal(cards.length, 2);
+    activity('completed', 'get_menu', { tool_key: 'anon:2', result: 'Two mains tonight.' });
+    assert.equal(cardCount(), 2);
+    assert.match(cards[1].textContent, /Two mains tonight/);
+    assert.equal(cards[0].dataset.status, 'started');
+    assert.match(cards[0].textContent, /In progress/);
+    // And an event nothing stamped at all still gets a card of its own rather
+    // than somebody else's.
+    activity('started', 'restaurant_info');
+    activity('started', 'find_dishes');
+    assert.equal(cardCount(), 4);
+  } finally {
+    f.dom.window.close();
+  }
+});
+
+test('a returning tab and a tap both ask a live call to resume its audio', async () => {
+  // Backgrounding the tab suspends the audio context. The page has to be able
+  // to ask for it back, because the paused state tells the caller to do
+  // exactly this -- and on iOS only a gesture is allowed to.
+  const f = await load({ liveConfigured: true });
+  try {
+    f.byId('call').click();
+    f.window.__resumed = 0;
+    // A tab on its way OUT is the moment the context gets suspended, not the
+    // moment to ask for it back. jsdom starts hidden, so this is that case.
+    assert.equal(f.document.hidden, true);
+    f.document.dispatchEvent(new f.window.Event('visibilitychange'));
+    assert.equal(f.window.__resumed, 0);
+    // Coming back is.
+    Object.defineProperty(f.document, 'hidden', { value: false, configurable: true });
+    f.document.dispatchEvent(new f.window.Event('visibilitychange'));
+    assert.equal(f.window.__resumed, 1);
+    f.document.dispatchEvent(new f.window.Event('pointerdown'));
+    assert.equal(f.window.__resumed, 2);
+  } finally {
+    f.dom.window.close();
+  }
 });
