@@ -1,0 +1,561 @@
+{
+ "_comment": "Locale reference data (PRD §15b). Server-owned: the dashboard reads it from /api/locales so a country added here reaches every client without shipping a new page. Selecting a country fills currency, timezone and clock; none of them is locked to it.",
+ "countries": [
+  {
+   "code": "IN",
+   "name": "India",
+   "currency": "INR",
+   "symbol": "₹",
+   "currency_name": "Indian rupee",
+   "timezone": "Asia/Kolkata",
+   "clock": "12"
+  },
+  {
+   "code": "AE",
+   "name": "United Arab Emirates",
+   "currency": "AED",
+   "symbol": "د.إ",
+   "currency_name": "UAE dirham",
+   "timezone": "Asia/Dubai",
+   "clock": "12"
+  },
+  {
+   "code": "AR",
+   "name": "Argentina",
+   "currency": "ARS",
+   "symbol": "$",
+   "currency_name": "Argentine peso",
+   "timezone": "America/Argentina/Buenos_Aires",
+   "clock": "24"
+  },
+  {
+   "code": "AU",
+   "name": "Australia",
+   "currency": "AUD",
+   "symbol": "$",
+   "currency_name": "Australian dollar",
+   "timezone": "Australia/Sydney",
+   "clock": "12"
+  },
+  {
+   "code": "AT",
+   "name": "Austria",
+   "currency": "EUR",
+   "symbol": "€",
+   "currency_name": "Euro",
+   "timezone": "Europe/Vienna",
+   "clock": "24"
+  },
+  {
+   "code": "BD",
+   "name": "Bangladesh",
+   "currency": "BDT",
+   "symbol": "৳",
+   "currency_name": "Bangladeshi taka",
+   "timezone": "Asia/Dhaka",
+   "clock": "12"
+  },
+  {
+   "code": "BE",
+   "name": "Belgium",
+   "currency": "EUR",
+   "symbol": "€",
+   "currency_name": "Euro",
+   "timezone": "Europe/Brussels",
+   "clock": "24"
+  },
+  {
+   "code": "BR",
+   "name": "Brazil",
+   "currency": "BRL",
+   "symbol": "R$",
+   "currency_name": "Brazilian real",
+   "timezone": "America/Sao_Paulo",
+   "clock": "24"
+  },
+  {
+   "code": "CA",
+   "name": "Canada",
+   "currency": "CAD",
+   "symbol": "$",
+   "currency_name": "Canadian dollar",
+   "timezone": "America/Toronto",
+   "clock": "12"
+  },
+  {
+   "code": "CL",
+   "name": "Chile",
+   "currency": "CLP",
+   "symbol": "$",
+   "currency_name": "Chilean peso",
+   "timezone": "America/Santiago",
+   "clock": "24"
+  },
+  {
+   "code": "CN",
+   "name": "China",
+   "currency": "CNY",
+   "symbol": "¥",
+   "currency_name": "Chinese yuan",
+   "timezone": "Asia/Shanghai",
+   "clock": "24"
+  },
+  {
+   "code": "CO",
+   "name": "Colombia",
+   "currency": "COP",
+   "symbol": "$",
+   "currency_name": "Colombian peso",
+   "timezone": "America/Bogota",
+   "clock": "12"
+  },
+  {
+   "code": "CZ",
+   "name": "Czechia",
+   "currency": "CZK",
+   "symbol": "Kč",
+   "currency_name": "Czech koruna",
+   "timezone": "Europe/Prague",
+   "clock": "24"
+  },
+  {
+   "code": "DK",
+   "name": "Denmark",
+   "currency": "DKK",
+   "symbol": "kr",
+   "currency_name": "Danish krone",
+   "timezone": "Europe/Copenhagen",
+   "clock": "24"
+  },
+  {
+   "code": "EG",
+   "name": "Egypt",
+   "currency": "EGP",
+   "symbol": "E£",
+   "currency_name": "Egyptian pound",
+   "timezone": "Africa/Cairo",
+   "clock": "12"
+  },
+  {
+   "code": "FI",
+   "name": "Finland",
+   "currency": "EUR",
+   "symbol": "€",
+   "currency_name": "Euro",
+   "timezone": "Europe/Helsinki",
+   "clock": "24"
+  },
+  {
+   "code": "FR",
+   "name": "France",
+   "currency": "EUR",
+   "symbol": "€",
+   "currency_name": "Euro",
+   "timezone": "Europe/Paris",
+   "clock": "24"
+  },
+  {
+   "code": "DE",
+   "name": "Germany",
+   "currency": "EUR",
+   "symbol": "€",
+   "currency_name": "Euro",
+   "timezone": "Europe/Berlin",
+   "clock": "24"
+  },
+  {
+   "code": "GR",
+   "name": "Greece",
+   "currency": "EUR",
+   "symbol": "€",
+   "currency_name": "Euro",
+   "timezone": "Europe/Athens",
+   "clock": "24"
+  },
+  {
+   "code": "HK",
+   "name": "Hong Kong",
+   "currency": "HKD",
+   "symbol": "HK$",
+   "currency_name": "Hong Kong dollar",
+   "timezone": "Asia/Hong_Kong",
+   "clock": "12"
+  },
+  {
+   "code": "HU",
+   "name": "Hungary",
+   "currency": "HUF",
+   "symbol": "Ft",
+   "currency_name": "Hungarian forint",
+   "timezone": "Europe/Budapest",
+   "clock": "24"
+  },
+  {
+   "code": "ID",
+   "name": "Indonesia",
+   "currency": "IDR",
+   "symbol": "Rp",
+   "currency_name": "Indonesian rupiah",
+   "timezone": "Asia/Jakarta",
+   "clock": "24"
+  },
+  {
+   "code": "IE",
+   "name": "Ireland",
+   "currency": "EUR",
+   "symbol": "€",
+   "currency_name": "Euro",
+   "timezone": "Europe/Dublin",
+   "clock": "12"
+  },
+  {
+   "code": "IL",
+   "name": "Israel",
+   "currency": "ILS",
+   "symbol": "₪",
+   "currency_name": "Israeli shekel",
+   "timezone": "Asia/Jerusalem",
+   "clock": "24"
+  },
+  {
+   "code": "IT",
+   "name": "Italy",
+   "currency": "EUR",
+   "symbol": "€",
+   "currency_name": "Euro",
+   "timezone": "Europe/Rome",
+   "clock": "24"
+  },
+  {
+   "code": "JP",
+   "name": "Japan",
+   "currency": "JPY",
+   "symbol": "¥",
+   "currency_name": "Japanese yen",
+   "timezone": "Asia/Tokyo",
+   "clock": "24"
+  },
+  {
+   "code": "JO",
+   "name": "Jordan",
+   "currency": "JOD",
+   "symbol": "JD",
+   "currency_name": "Jordanian dinar",
+   "timezone": "Asia/Amman",
+   "clock": "12"
+  },
+  {
+   "code": "KE",
+   "name": "Kenya",
+   "currency": "KES",
+   "symbol": "KSh",
+   "currency_name": "Kenyan shilling",
+   "timezone": "Africa/Nairobi",
+   "clock": "12"
+  },
+  {
+   "code": "KW",
+   "name": "Kuwait",
+   "currency": "KWD",
+   "symbol": "KD",
+   "currency_name": "Kuwaiti dinar",
+   "timezone": "Asia/Kuwait",
+   "clock": "12"
+  },
+  {
+   "code": "MY",
+   "name": "Malaysia",
+   "currency": "MYR",
+   "symbol": "RM",
+   "currency_name": "Malaysian ringgit",
+   "timezone": "Asia/Kuala_Lumpur",
+   "clock": "12"
+  },
+  {
+   "code": "MX",
+   "name": "Mexico",
+   "currency": "MXN",
+   "symbol": "$",
+   "currency_name": "Mexican peso",
+   "timezone": "America/Mexico_City",
+   "clock": "12"
+  },
+  {
+   "code": "MA",
+   "name": "Morocco",
+   "currency": "MAD",
+   "symbol": "DH",
+   "currency_name": "Moroccan dirham",
+   "timezone": "Africa/Casablanca",
+   "clock": "24"
+  },
+  {
+   "code": "NL",
+   "name": "Netherlands",
+   "currency": "EUR",
+   "symbol": "€",
+   "currency_name": "Euro",
+   "timezone": "Europe/Amsterdam",
+   "clock": "24"
+  },
+  {
+   "code": "NZ",
+   "name": "New Zealand",
+   "currency": "NZD",
+   "symbol": "$",
+   "currency_name": "New Zealand dollar",
+   "timezone": "Pacific/Auckland",
+   "clock": "12"
+  },
+  {
+   "code": "NG",
+   "name": "Nigeria",
+   "currency": "NGN",
+   "symbol": "₦",
+   "currency_name": "Nigerian naira",
+   "timezone": "Africa/Lagos",
+   "clock": "12"
+  },
+  {
+   "code": "NO",
+   "name": "Norway",
+   "currency": "NOK",
+   "symbol": "kr",
+   "currency_name": "Norwegian krone",
+   "timezone": "Europe/Oslo",
+   "clock": "24"
+  },
+  {
+   "code": "OM",
+   "name": "Oman",
+   "currency": "OMR",
+   "symbol": "ر.ع.",
+   "currency_name": "Omani rial",
+   "timezone": "Asia/Muscat",
+   "clock": "12"
+  },
+  {
+   "code": "PK",
+   "name": "Pakistan",
+   "currency": "PKR",
+   "symbol": "₨",
+   "currency_name": "Pakistani rupee",
+   "timezone": "Asia/Karachi",
+   "clock": "12"
+  },
+  {
+   "code": "PH",
+   "name": "Philippines",
+   "currency": "PHP",
+   "symbol": "₱",
+   "currency_name": "Philippine peso",
+   "timezone": "Asia/Manila",
+   "clock": "12"
+  },
+  {
+   "code": "PL",
+   "name": "Poland",
+   "currency": "PLN",
+   "symbol": "zł",
+   "currency_name": "Polish złoty",
+   "timezone": "Europe/Warsaw",
+   "clock": "24"
+  },
+  {
+   "code": "PT",
+   "name": "Portugal",
+   "currency": "EUR",
+   "symbol": "€",
+   "currency_name": "Euro",
+   "timezone": "Europe/Lisbon",
+   "clock": "24"
+  },
+  {
+   "code": "QA",
+   "name": "Qatar",
+   "currency": "QAR",
+   "symbol": "ر.ق",
+   "currency_name": "Qatari riyal",
+   "timezone": "Asia/Qatar",
+   "clock": "12"
+  },
+  {
+   "code": "RO",
+   "name": "Romania",
+   "currency": "RON",
+   "symbol": "lei",
+   "currency_name": "Romanian leu",
+   "timezone": "Europe/Bucharest",
+   "clock": "24"
+  },
+  {
+   "code": "SA",
+   "name": "Saudi Arabia",
+   "currency": "SAR",
+   "symbol": "ر.س",
+   "currency_name": "Saudi riyal",
+   "timezone": "Asia/Riyadh",
+   "clock": "12"
+  },
+  {
+   "code": "SG",
+   "name": "Singapore",
+   "currency": "SGD",
+   "symbol": "S$",
+   "currency_name": "Singapore dollar",
+   "timezone": "Asia/Singapore",
+   "clock": "12"
+  },
+  {
+   "code": "ZA",
+   "name": "South Africa",
+   "currency": "ZAR",
+   "symbol": "R",
+   "currency_name": "South African rand",
+   "timezone": "Africa/Johannesburg",
+   "clock": "12"
+  },
+  {
+   "code": "KR",
+   "name": "South Korea",
+   "currency": "KRW",
+   "symbol": "₩",
+   "currency_name": "South Korean won",
+   "timezone": "Asia/Seoul",
+   "clock": "12"
+  },
+  {
+   "code": "ES",
+   "name": "Spain",
+   "currency": "EUR",
+   "symbol": "€",
+   "currency_name": "Euro",
+   "timezone": "Europe/Madrid",
+   "clock": "24"
+  },
+  {
+   "code": "LK",
+   "name": "Sri Lanka",
+   "currency": "LKR",
+   "symbol": "Rs",
+   "currency_name": "Sri Lankan rupee",
+   "timezone": "Asia/Colombo",
+   "clock": "12"
+  },
+  {
+   "code": "SE",
+   "name": "Sweden",
+   "currency": "SEK",
+   "symbol": "kr",
+   "currency_name": "Swedish krona",
+   "timezone": "Europe/Stockholm",
+   "clock": "24"
+  },
+  {
+   "code": "CH",
+   "name": "Switzerland",
+   "currency": "CHF",
+   "symbol": "CHF",
+   "currency_name": "Swiss franc",
+   "timezone": "Europe/Zurich",
+   "clock": "24"
+  },
+  {
+   "code": "TW",
+   "name": "Taiwan",
+   "currency": "TWD",
+   "symbol": "NT$",
+   "currency_name": "New Taiwan dollar",
+   "timezone": "Asia/Taipei",
+   "clock": "12"
+  },
+  {
+   "code": "TH",
+   "name": "Thailand",
+   "currency": "THB",
+   "symbol": "฿",
+   "currency_name": "Thai baht",
+   "timezone": "Asia/Bangkok",
+   "clock": "24"
+  },
+  {
+   "code": "TR",
+   "name": "Türkiye",
+   "currency": "TRY",
+   "symbol": "₺",
+   "currency_name": "Turkish lira",
+   "timezone": "Europe/Istanbul",
+   "clock": "24"
+  },
+  {
+   "code": "UA",
+   "name": "Ukraine",
+   "currency": "UAH",
+   "symbol": "₴",
+   "currency_name": "Ukrainian hryvnia",
+   "timezone": "Europe/Kyiv",
+   "clock": "24"
+  },
+  {
+   "code": "GB",
+   "name": "United Kingdom",
+   "currency": "GBP",
+   "symbol": "£",
+   "currency_name": "Pound sterling",
+   "timezone": "Europe/London",
+   "clock": "12"
+  },
+  {
+   "code": "US",
+   "name": "United States",
+   "currency": "USD",
+   "symbol": "$",
+   "currency_name": "US dollar",
+   "timezone": "America/New_York",
+   "clock": "12"
+  },
+  {
+   "code": "VN",
+   "name": "Vietnam",
+   "currency": "VND",
+   "symbol": "₫",
+   "currency_name": "Vietnamese dong",
+   "timezone": "Asia/Ho_Chi_Minh",
+   "clock": "24"
+  }
+ ],
+ "languages": [
+  "English",
+  "Hindi",
+  "Marathi",
+  "Konkani",
+  "Gujarati",
+  "Tamil",
+  "Telugu",
+  "Bengali",
+  "Punjabi",
+  "Kannada",
+  "Malayalam",
+  "Urdu",
+  "Arabic",
+  "French",
+  "Spanish",
+  "Portuguese",
+  "German",
+  "Italian",
+  "Mandarin",
+  "Cantonese",
+  "Japanese",
+  "Korean",
+  "Thai",
+  "Vietnamese",
+  "Indonesian",
+  "Malay",
+  "Tagalog",
+  "Swahili",
+  "Turkish",
+  "Russian",
+  "Polish",
+  "Dutch"
+ ]
+}

@@ -89,9 +89,9 @@ def test_definition_voice_outranks_the_configured_default(monkeypatch):
     assert session["output"]["voice"] == "diego"
 
 
-def test_session_defaults_to_the_restaurant_when_given_no_agent():
-    """Every existing caller passes nothing, and must be unchanged."""
-    assert AgentSession(_Transport())._agent.name == "restaurant"
+def test_session_defaults_to_the_default_business_when_given_no_agent():
+    """Passing no agent resolves DEFAULT_BUSINESS_SLUG, not a module constant."""
+    assert AgentSession(_Transport())._agent.name == "business:default-test-venue"
 
 
 def test_session_keeps_the_agent_it_was_given():
@@ -333,16 +333,15 @@ def test_experience_names_the_configured_agent_not_the_restaurant(monkeypatch):
     assert body["agent"] == "dairy"
 
 
-def test_experience_falls_back_to_the_restaurant_with_no_factory(monkeypatch):
+def test_experience_falls_back_to_the_default_business_with_no_factory(monkeypatch):
     from fastapi.testclient import TestClient
 
     from calling_agent.main import app
 
-    monkeypatch.setattr(settings, "restaurant_name", "The Copper Kettle")
     monkeypatch.setattr(settings, "agent_factory", "")
     body = TestClient(app).get("/experience").json()
     assert body["restaurant"] == "The Copper Kettle"
-    assert body["agent"] == "restaurant"
+    assert body["agent"] == "business:default-test-venue"
 
 
 def _dairy_factory(params):

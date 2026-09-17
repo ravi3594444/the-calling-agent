@@ -174,7 +174,7 @@ def test_tool_call_round_trips(upstream):
     upstream.will_send(
         {
             "type": "tool.call",
-            "name": "restaurant_info",
+            "name": "business_info",
             "call_id": "call-7",
             "arguments": {},
         }
@@ -185,7 +185,7 @@ def test_tool_call_round_trips(upstream):
     results = [m for m in upstream.received if m["type"] == "tool.result"]
     assert results, f"no tool.result sent; got {[m['type'] for m in upstream.received]}"
     assert results[0]["call_id"] == "call-7"
-    assert "Opening hours" in results[0]["result"]
+    assert "The Copper Kettle" in results[0]["result"]
     assert results[0]["is_error"] is False
 
 
@@ -518,7 +518,7 @@ def test_tool_result_waits_for_reply_done(upstream):
     """
     upstream.will_send(
         {"type": "reply.started"},
-        {"type": "tool.call", "name": "restaurant_info", "call_id": "c-1", "arguments": {}},
+        {"type": "tool.call", "name": "business_info", "call_id": "c-1", "arguments": {}},
     )
 
     with _client().websocket_connect("/ws") as ws:
@@ -530,7 +530,7 @@ def test_tool_result_waits_for_reply_done(upstream):
 def test_reply_done_releases_the_queued_result(upstream):
     upstream.will_send(
         {"type": "reply.started"},
-        {"type": "tool.call", "name": "restaurant_info", "call_id": "c-1", "arguments": {}},
+        {"type": "tool.call", "name": "business_info", "call_id": "c-1", "arguments": {}},
         {"type": "reply.done", "status": "completed"},
     )
 
@@ -545,7 +545,7 @@ def test_reply_done_releases_the_queued_result(upstream):
 def test_tool_result_is_sent_at_once_when_no_reply_is_in_progress(upstream):
     """With nothing to wait for, holding the result would stall the call."""
     upstream.will_send(
-        {"type": "tool.call", "name": "restaurant_info", "call_id": "c-2", "arguments": {}}
+        {"type": "tool.call", "name": "business_info", "call_id": "c-2", "arguments": {}}
     )
 
     with _client().websocket_connect("/ws") as ws:
@@ -574,7 +574,7 @@ async def test_queued_results_are_flushed_if_reply_done_never_arrives(monkeypatc
     agent._reply_active = True  # a reply that never completes
     await agent._handle_tool_call(
         FakeUpstream(),
-        {"type": "tool.call", "name": "restaurant_info", "call_id": "c-3", "arguments": {}},
+        {"type": "tool.call", "name": "business_info", "call_id": "c-3", "arguments": {}},
     )
 
     assert not sent, "should be queued while the reply is active"

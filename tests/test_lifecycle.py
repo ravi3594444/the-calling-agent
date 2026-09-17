@@ -1,0 +1,376 @@
+"""The booking lifecycle and the overflow queue (PRD §9, §11).
+
+The counter is the assertion in most of these. A status change that does not
+move capacity correctly is invisible in the UI and catastrophic in the room.
+"""
+
+from __future__ import annotations
+
+from datetime import timedelta
+
+import pytest
+
+from calling_agent import availability, bookings, holds, notifications
+from calling_agent.db import readonly
+from tests.conftest import committed, future_slot, make_business
+
+
+def _confirmed(business, at, units=2, name="Ravi", phone="+919876543210"):
+    return bookings.create_direct(
+        business, start=at, units=units, name=name, phone=phone
+    )
+
+
+def _messages(business_id, kind=None):
+    from sqlalchemy import text
+
+    sql = "SELECT kind, body, to_address, channel, status FROM messages WHERE business_id = :b"
+    if kind:
+        sql += " AND kind = :k"
+    with readonly() as conn:
+        return conn.execute(
+            text(sql), {"b": str(business_id), "k": kind} if kind else {"b": str(business_id)}
+        ).fetchall()
+
+
+# --- pending and the counter -------------------------------------------------
+
+
+def test_a_pending_request_never_touches_the_counter():
+    """PRD §9: only `confirmed` holds capacity."""
+    business = make_business(total_units=4)
+    at = future_slot(business)
+
+    booking, deadline = bookings.request_overflow(
+        business, start=at, units=4, name="Kulkarni", phone="+919930261147"
+    )
+    assert booking.status == "pending"
+    assert committed(business.id, at) == 0, "a waitlist request took capacity"
+    assert deadline is not None
+
+    # And the room is still sellable to someone who can be confirmed now.
+    assert availability.is_available(business, at, 4).ok
+
+
+def test_accepting_a_pending_request_takes_the_capacity():
+    business = make_business(total_units=4)
+    at = future_slot(business)
+    booking, _ = bookings.request_overflow(
+        business, start=at, units=3, name="Kulkarni", phone="+919930261147"
+    )
+
+    accepted = bookings.accept(business, booking.id)
+
+    assert accepted.status == "confirmed"
+    assert committed(business.id, at) == 3
+    assert accepted.reference == booking.reference, "accepting minted a new reference"
+
+
+def test_an_owner_may_accept_past_the_walk_in_buffer():
+    """PRD §11 step 4: accept may deliberately exceed sellable_pct."""
+    business = make_business(total_units=10, config={"capacity": {"sellable_pct": 0.5}})
+    at = future_slot(business)
+
+    _confirmed(business, at, units=5)                      # fills the sellable share
+    assert not availability.is_available(business, at, 1).ok
+
+    waiting, _ = bookings.request_overflow(
+        business, start=at, units=2, name="Late", phone="+910000000001"
+    )
+    accepted = bookings.accept(business, waiting.id)
+
+    assert accepted.status == "confirmed"
+    assert committed(business.id, at) == 7, "the owner's override did not take the seats"
+
+
+def test_declining_offers_the_nearest_alternative():
+    business = make_business(total_units=4)
+    at = future_slot(business)
+    waiting, _ = bookings.request_overflow(
+        business, start=at, units=2, name="Kulkarni", phone="+919930261147"
+    )
+
+    declined = bookings.decline(business, waiting.id)
+
+    assert declined.status == "declined"
+    assert committed(business.id, at) == 0
+    bodies = [m.body for m in _messages(business.id, "declined")]
+    assert bodies and bodies[0], "nobody was told they had been declined"
+
+
+# --- cancellation and no-shows ----------------------------------------------
+
+
+def test_cancelling_puts_the_seats_back_on_sale():
+    business = make_business(total_units=4)
+    at = future_slot(business)
+    booking = _confirmed(business, at, units=4)
+    assert committed(business.id, at) == 4
+
+    bookings.cancel(business, booking.id)
+
+    assert committed(business.id, at) == 0
+    assert availability.is_available(business, at, 4).ok
+
+
+def test_a_no_show_frees_the_seats_and_is_remembered():
+    business = make_business(total_units=4)
+    at = future_slot(business)
+    booking = _confirmed(business, at, units=2)
+
+    bookings.mark_arrived(business, booking.id)
+    after_arrival = bookings.by_id(business, booking.id)
+    assert after_arrival.visits == 1
+    assert committed(business.id, at) == 2, "arriving should not change capacity"
+
+    bookings.mark_no_show(business, booking.id)
+    marked = bookings.by_id(business, booking.id)
+
+    assert marked.status == "no_show"
+    assert marked.no_shows == 1
+    assert marked.visits == 0, "the visit should have been taken back"
+    assert committed(business.id, at) == 0, "a no-show's seats stayed sold"
+
+
+def test_undo_leaves_no_trace_on_the_guest():
+    """A mistap must not follow a guest around forever."""
+    business = make_business(total_units=4)
+    at = future_slot(business)
+    booking = _confirmed(business, at, units=2)
+
+    bookings.mark_no_show(business, booking.id)
+    bookings.undo(business, booking.id)
+    after = bookings.by_id(business, booking.id)
+
+    assert after.status == "confirmed"
+    assert after.no_shows == 0, "the undone no-show is still on the guest's record"
+    assert committed(business.id, at) == 2, "undo did not re-take the seats"
+
+
+def test_illegal_transitions_are_refused_by_name():
+    business = make_business(total_units=4)
+    at = future_slot(business)
+    booking = _confirmed(business, at, units=2)
+    bookings.cancel(business, booking.id)
+
+    with pytest.raises(bookings.IllegalTransition):
+        bookings.mark_arrived(business, booking.id)
+
+
+def test_status_changes_are_idempotent():
+    business = make_business(total_units=4)
+    at = future_slot(business)
+    booking = _confirmed(business, at, units=2)
+
+    bookings.cancel(business, booking.id)
+    again = bookings.cancel(business, booking.id)
+
+    assert again.status == "cancelled"
+    assert committed(business.id, at) == 0, "cancelling twice released the seats twice"
+
+
+# --- the waitlist ------------------------------------------------------------
+
+
+def test_a_cancellation_auto_accepts_the_oldest_fitting_request():
+    """PRD §11: on any cancellation the oldest fitting request is auto-accepted."""
+    business = make_business(total_units=4)
+    at = future_slot(business)
+    booked = _confirmed(business, at, units=4)
+
+    first, _ = bookings.request_overflow(
+        business, start=at, units=2, name="First", phone="+910000000011"
+    )
+    second, _ = bookings.request_overflow(
+        business, start=at, units=2, name="Second", phone="+910000000022"
+    )
+
+    bookings.cancel(business, booked.id)
+
+    assert bookings.by_id(business, first.id).status == "confirmed"
+    assert bookings.by_id(business, second.id).status == "pending", "both were let in"
+    assert committed(business.id, at) == 2
+
+
+def test_a_slot_takes_only_so_many_waiting_requests():
+    business = make_business(total_units=2, config={"policy": {"max_pending_per_slot": 2}})
+    at = future_slot(business)
+    _confirmed(business, at, units=2)
+
+    bookings.request_overflow(business, start=at, units=2, name="A", phone="+910000000001")
+    bookings.request_overflow(business, start=at, units=2, name="B", phone="+910000000002")
+    with pytest.raises(bookings.BookingError):
+        bookings.request_overflow(business, start=at, units=2, name="C", phone="+910000000003")
+
+
+def test_an_unanswered_request_declines_itself_rather_than_going_quiet():
+    """PRD §11 step 6: never leave the customer silent."""
+    business = make_business(total_units=2)
+    at = future_slot(business)
+    _confirmed(business, at, units=2)
+    waiting, _ = bookings.request_overflow(
+        business, start=at, units=2, name="Kulkarni", phone="+919930261147"
+    )
+
+    expired = bookings.expire_overflow(business, waiting.id)
+
+    assert expired is not None and expired.status == "declined"
+    assert [m.body for m in _messages(business.id, "declined")], "the deadline passed in silence"
+
+
+# --- moving ------------------------------------------------------------------
+
+
+def test_moving_keeps_the_reference_and_the_capacity_follows():
+    business = make_business(total_units=4)
+    at = future_slot(business, hour=19)
+    later = future_slot(business, hour=20)
+    booking = _confirmed(business, at, units=2)
+
+    moved = bookings.move(business, booking.id, later)
+
+    assert moved.reference == booking.reference, "a reschedule minted a new reference"
+    assert committed(business.id, at) == 0, "the old time kept the seats"
+    assert committed(business.id, later) == 2
+
+
+def test_a_move_with_no_room_leaves_the_booking_where_it_was():
+    business = make_business(total_units=4)
+    at = future_slot(business, hour=19)
+    # Another day, so the two bookings' 90-minute turns cannot overlap and the
+    # refusal is unambiguously "that time is full".
+    full = future_slot(business, days_ahead=3, hour=19)
+    booking = _confirmed(business, at, units=2)
+    _confirmed(business, full, units=4, name="Other", phone="+910000000099")
+
+    with pytest.raises(bookings.NoCapacity):
+        bookings.move(business, booking.id, full)
+
+    assert bookings.by_id(business, booking.id).start_time == at
+    assert committed(business.id, at) == 2, "a failed move dropped the original seats"
+
+
+# --- messages ----------------------------------------------------------------
+
+
+def test_a_confirmed_booking_queues_a_text_and_a_reminder():
+    business = make_business(total_units=4)
+    at = future_slot(business, days_ahead=3)
+    _confirmed(business, at, units=2)
+
+    confirmations = _messages(business.id, "confirmed")
+    assert confirmations, "no confirmation was queued"
+    assert confirmations[0].status == "queued", "a message was sent from the request path"
+    assert "Reference" in confirmations[0].body or confirmations[0].body
+
+    from sqlalchemy import text
+
+    with readonly() as conn:
+        tasks = conn.execute(
+            text("SELECT reason, status FROM outbound_tasks WHERE business_id = :b"),
+            {"b": str(business.id)},
+        ).fetchall()
+    assert any(t.reason == "reminder" for t in tasks), "no day-before reminder was scheduled"
+
+
+def test_cancelling_drops_the_reminder_that_is_no_longer_true():
+    business = make_business(total_units=4)
+    at = future_slot(business, days_ahead=3)
+    booking = _confirmed(business, at, units=2)
+
+    bookings.cancel(business, booking.id)
+
+    from sqlalchemy import text
+
+    with readonly() as conn:
+        reminders = conn.execute(
+            text(
+                "SELECT status FROM outbound_tasks WHERE business_id = :b AND reason = 'reminder'"
+            ),
+            {"b": str(business.id)},
+        ).fetchall()
+    assert all(r.status == "cancelled" for r in reminders), (
+        "a cancelled booking would still have been reminded about"
+    )
+
+
+def test_a_do_not_call_guest_is_never_rung():
+    """PRD §13: do_not_call is absolute."""
+    from sqlalchemy import text
+
+    business = make_business(total_units=4)
+    at = future_slot(business)
+    booking = _confirmed(business, at, units=2, phone="+919999999999")
+    with readonly() as conn:
+        pass
+    from calling_agent.db import transaction
+
+    with transaction() as conn:
+        conn.execute(
+            text("UPDATE customers SET do_not_call = true WHERE business_id = :b"),
+            {"b": str(business.id)},
+        )
+
+    bookings.transition(business, booking.id, "cancelled", channel="call")
+
+    voice = [m for m in _messages(business.id) if m.channel == "voice"]
+    assert not voice, "a do-not-call guest was queued for a phone call"
+
+
+def test_the_sender_is_a_plug_not_a_hardcoded_provider():
+    """Another system drops this agent in with its own carrier (PRD §16)."""
+    business = make_business(total_units=4)
+    at = future_slot(business)
+    _confirmed(business, at, units=2)
+
+    sent: list[tuple[str, str]] = []
+
+    @notifications.provider("test-carrier")
+    def _carrier(to, body, biz):
+        sent.append((to, body))
+        return "carrier-1"
+
+    from calling_agent.config import settings
+
+    before = settings.sms_provider
+    settings.sms_provider = "test-carrier"
+    try:
+        assert notifications.send_queued() >= 1
+    finally:
+        settings.sms_provider = before
+        notifications.PROVIDERS.pop("test-carrier", None)
+
+    assert "+919876543210" in [to for to, _ in sent]
+
+
+def test_holds_expire_back_into_availability():
+    business = make_business(total_units=2)
+    at = future_slot(business)
+    held = holds.take(business.id, at, 2, ttl_seconds=1)
+    assert held.ok
+    assert not availability.is_available(business, at, 1).ok
+
+    holds.expire_now(held.hold_id)
+    holds.sweep_expired()
+
+    assert availability.is_available(business, at, 2).ok
+
+
+def test_a_booking_is_listed_on_the_service_it_belongs_to_not_the_calendar_day():
+    """A venue open until 01:00 puts a 00:30 booking on the night it started."""
+    from datetime import UTC, datetime, time
+
+    business = make_business(
+        open_at=time(18, 0), close_at=time(1, 0), total_units=8, turn_minutes=30
+    )
+    local_day = (datetime.now(business.tz) + timedelta(days=2)).date()
+    after_midnight = datetime.combine(
+        local_day + timedelta(days=1), time(0, 30), tzinfo=business.tz
+    ).astimezone(UTC)
+
+    _confirmed(business, after_midnight, units=2)
+
+    listed = bookings.on_local_date(business, local_day)
+    assert [b.start_time for b in listed] == [after_midnight], (
+        "a late booking fell off the night it belongs to"
+    )

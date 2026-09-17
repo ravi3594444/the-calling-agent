@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tableline</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+/* ---------- themes ---------- */
+:root{
+  --page:#F4F3F0; --card:#FFF; --band:#FAFAF8;
+  --line:#E3E1DC; --line-2:#EFEDE9;
+  --ink:#1A1A17; --ink-2:#605E56; --ink-3:#8B8880;
+  --accent:#1E4F3F; --on-accent:#FFF; --gold:#8A5A16; --gold-line:#E2C892; --gold-bg:#FDF8EE;
+  --ok:#35705A; --ok-line:#C8DCD3; --ok-bg:#F1F6F3;
+  --no:#8E4433; --no-line:#E7CCC4; --no-bg:#FAF1EE;
+  --fill:#C9C6BE;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]):not([data-theme="black"]){
+    --page:#151412; --card:#1D1C1A; --band:#232120;
+    --line:#302E2B; --line-2:#292725;
+    --ink:#EFECE5; --ink-2:#A6A198; --ink-3:#77726A;
+    --accent:#3E8C6E; --on-accent:#0C0F0D; --gold:#C9A227; --gold-line:#5A4A1E; --gold-bg:#211C10;
+    --ok:#6FB795; --ok-line:#2C4A3E; --ok-bg:#16211C;
+    --no:#C98873; --no-line:#4A302A; --no-bg:#211714;
+    --fill:#413E39;
+  }
+}
+:root[data-theme="dark"]{
+  --page:#151412; --card:#1D1C1A; --band:#232120;
+  --line:#302E2B; --line-2:#292725;
+  --ink:#EFECE5; --ink-2:#A6A198; --ink-3:#77726A;
+  --accent:#3E8C6E; --on-accent:#0C0F0D; --gold:#C9A227; --gold-line:#5A4A1E; --gold-bg:#211C10;
+  --ok:#6FB795; --ok-line:#2C4A3E; --ok-bg:#16211C;
+  --no:#C98873; --no-line:#4A302A; --no-bg:#211714;
+  --fill:#413E39;
+}
+:root[data-theme="black"]{
+  --page:#000; --card:#0A0A0A; --band:#141414;
+  --line:#2C2C2C; --line-2:#1E1E1E;
+  --ink:#FFFFFF; --ink-2:#ADADAB; --ink-3:#757573;
+  --accent:#FFFFFF; --on-accent:#000; --gold:#D8B23A; --gold-line:#57481D; --gold-bg:#171307;
+  --ok:#74C69D; --ok-line:#233A2E; --ok-bg:#0B1510;
+  --no:#D4907B; --no-line:#3C251F; --no-bg:#160D0B;
+  --fill:#4A4A4A;
+}
+/* black: the primary action is white, so it needs its own weight and hovers */
+:root[data-theme="black"] .btn.key{font-weight:600}
+:root[data-theme="black"] .btn.key:hover{opacity:1;background:#E4E4E4;border-color:#E4E4E4}
+:root[data-theme="black"] .mark{background:#fff}
+:root[data-theme="black"] nav button.on{border-color:#3A3A3A;background:#141414}
+:root[data-theme="black"] .d.today .n{font-weight:600}
+:root[data-theme="black"] .d.sel{box-shadow:inset 0 0 0 1.5px #fff}
+:root[data-theme="black"] .sw.on::after{background:#000}
+:root[data-theme="black"] .tl li::before{background:#4A4A4A}
+/* black: fullness reads as white, gold is reserved for the one thing awaiting a decision */
+:root[data-theme="black"] .d.hot .bar i{background:#fff}
+:root[data-theme="black"] .slot.full .sbar i{background:#fff}
+:root[data-theme="black"] .slot.full .num{color:#fff}
+:root[data-theme="black"] .d.shut .c{color:var(--ink-2)}
+:root[data-theme="black"] .d.shut{background:#0F0F0F}
+
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--page);color:var(--ink);
+  font-family:"Instrument Sans",system-ui,-apple-system,sans-serif;
+  font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+a{color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.9em}
+.hide{display:none!important}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+/* ---------- bar ---------- */
+.bar{background:var(--card);border-bottom:1px solid var(--line)}
+.bar-in{max-width:1140px;margin:0 auto;padding:16px 28px;display:flex;align-items:center;gap:26px}
+.brand{display:flex;align-items:center;gap:11px;font-weight:700;font-size:18px}
+.mark{width:30px;height:30px;border-radius:7px;background:var(--accent);display:grid;place-items:center;flex:none}
+.mark svg{width:16px;height:16px;stroke:var(--on-accent);fill:none;stroke-width:2;stroke-linecap:round}
+nav{display:flex;gap:4px;flex:1;flex-wrap:wrap}
+nav button{color:var(--ink-2);font-size:15px;padding:7px 13px;border-radius:6px;border:1px solid transparent}
+nav button:hover{color:var(--ink)}
+nav button.on{color:var(--ink);border-color:var(--line)}
+.acct{text-align:right;line-height:1.3}
+.acct b{display:block;font-size:14.5px;font-weight:600}
+.acct span{font-size:13px;color:var(--ink-3)}
+.theme{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;margin-left:4px}
+.theme button{padding:6px 10px;font-size:13px;color:var(--ink-3);border-right:1px solid var(--line)}
+.theme button:last-child{border-right:none}
+.theme button.on{background:var(--band);color:var(--ink);font-weight:600}
+
+/* ---------- page ---------- */
+.page{max-width:1140px;margin:0 auto;padding:34px 28px 70px}
+.head{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:24px;flex-wrap:wrap}
+h1{font-size:30px;font-weight:700;line-height:1.15;letter-spacing:-.02em}
+.head p{color:var(--ink-2);margin-top:8px;font-size:16px;max-width:62ch}
+.head{margin-bottom:28px}
+@media(max-width:620px){h1{font-size:25px}.head p{font-size:15px}}
+.tabs{display:flex;gap:22px;font-size:15px}
+.tabs button{color:var(--ink-2);padding-bottom:2px;border-bottom:2px solid transparent}
+.tabs button.on{color:var(--ink);font-weight:600;border-bottom-color:var(--ink)}
+
+/* ---------- card ---------- */
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;margin-bottom:20px}
+.card-h{padding:18px 22px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:flex-end;gap:18px;flex-wrap:wrap}
+.card-h h2{font-size:17px;font-weight:700}
+.card-h p{font-size:14px;color:var(--ink-2);margin-top:4px}
+.card-b{padding:22px}
+
+/* ---------- tables ---------- */
+table{width:100%;border-collapse:collapse}
+thead th{text-align:left;font-size:14px;font-weight:600;color:var(--ink-2);padding:12px 22px;border-bottom:1px solid var(--line);
+  position:sticky;top:0;background:var(--card);z-index:2}
+thead th.r{text-align:right}
+tbody td{padding:14px 22px;border-bottom:1px solid var(--line-2);font-size:15px}
+tbody td.r{text-align:right}
+tbody tr:last-child td{border-bottom:none}
+tbody tr.b{cursor:pointer}
+tbody tr.b:hover{background:var(--band)}
+.meta{font-size:13.5px;color:var(--ink-3);margin-top:2px}
+tr.past td{color:var(--ink-3)}
+.pill{display:inline-block;padding:4px 11px;border:1px solid var(--line);border-radius:6px;font-size:13.5px;color:var(--ink-2);white-space:nowrap}
+.pill.act{border-color:var(--gold-line);color:var(--gold);background:var(--gold-bg)}
+.pill.ok{border-color:var(--ok-line);color:var(--ok);background:var(--ok-bg)}
+.pill.no{border-color:var(--no-line);color:var(--no);background:var(--no-bg)}
+tr.unseen td:first-child{box-shadow:inset 3px 0 0 var(--gold)}
+
+/* time-block header inside the bookings table */
+tr.block td{
+  background:var(--band);padding:8px 22px;font-size:13.5px;color:var(--ink-2);
+  border-bottom:1px solid var(--line-2);
+}
+tr.block .free{float:right;color:var(--ink-3)}
+tr.block .free.tight{color:var(--gold)}
+
+/* detail */
+tr.detail{display:none}
+tr.detail.open{display:table-row}
+tr.detail td{background:var(--band);padding:18px 22px 20px}
+.dl{display:flex;flex-wrap:wrap;gap:8px 36px;font-size:14px;margin-bottom:16px}
+.dl div{display:flex;gap:9px}
+.dl dt{color:var(--ink-3)}
+.acts{display:flex;flex-wrap:wrap;gap:9px}
+.btn{font-size:14px;padding:8px 15px;border-radius:7px;border:1px solid var(--line);background:var(--card);color:var(--ink-2)}
+.btn:hover{border-color:var(--ink-3);color:var(--ink)}
+.btn.key{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.btn.key:hover{opacity:.9;color:var(--on-accent)}
+.btn.sm{padding:5px 11px;font-size:13.5px}
+.btn.no{color:var(--no);border-color:var(--no-line)}
+.btn.no:hover{color:var(--no);border-color:var(--no);background:var(--no-bg)}
+.btn.ok{color:var(--ok);border-color:var(--ok-line)}
+.btn.ok:hover{color:var(--ok);border-color:var(--ok);background:var(--ok-bg)}
+tr.missed td{color:var(--ink-3)}
+
+/* timeline */
+.tl{border-left:1px solid var(--line);padding-left:18px;margin:2px 0 18px}
+.tl li{list-style:none;font-size:14px;padding:5px 0;position:relative}
+.tl li::before{content:"";position:absolute;left:-22px;top:12px;width:7px;height:7px;border-radius:50%;background:var(--ink-3)}
+.tl time{color:var(--ink-3);margin-right:12px;font-size:13.5px}
+
+/* search */
+.search{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.search input{padding:9px 12px;border:1px solid var(--line);border-radius:7px;font:inherit;background:var(--card);color:var(--ink);min-width:230px}
+.search input::placeholder{color:var(--ink-3)}
+
+/* ---------- calendar ---------- */
+.calbar{display:flex;align-items:center;gap:14px}
+.calbar .mo{font-size:17px;font-weight:700;min-width:130px}
+.arrow{width:34px;height:34px;border:1px solid var(--line);border-radius:8px;display:grid;place-items:center;color:var(--ink-2)}
+.arrow:hover{color:var(--ink);border-color:var(--ink-3)}
+.arrow svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:7px;padding:16px 20px 20px}
+.dow{padding:0 2px 6px;font-size:12.5px;color:var(--ink-3);text-align:center}
+.d{
+  aspect-ratio:1/1;padding:9px 9px 10px;cursor:pointer;
+  display:flex;flex-direction:column;
+  border:1px solid var(--line-2);border-radius:10px;background:var(--card);
+  transition:border-color .12s ease, background .12s ease;
+  overflow:hidden;
+}
+.d:hover{background:var(--band);border-color:var(--line)}
+.d.void{cursor:default;border-color:transparent;background:transparent;pointer-events:none}
+.d .n{font-size:14.5px;font-weight:600;line-height:1.2}
+.d.today .n{display:inline-block;align-self:flex-start;background:var(--accent);color:var(--on-accent);
+  border-radius:6px;padding:1px 7px;margin:-1px 0 0 -3px}
+.d .c{font-size:12px;color:var(--ink-2);margin-top:auto;line-height:1.25}
+.d .sub{font-size:11.5px;color:var(--ink-3);line-height:1.25}
+.d .bar{margin-top:6px;height:4px;background:var(--line-2);border-radius:3px;overflow:hidden;flex:none}
+.d .bar i{display:block;height:100%;background:var(--fill);border-radius:3px}
+.d.hot .bar i{background:var(--gold)}
+.d.shut{background:var(--band)}
+.d.shut .c{color:var(--gold)}
+.d.locked{border-style:dashed;background:transparent}
+.d.locked .n,.d.locked .c{color:var(--ink-3)}
+.d.sel{background:var(--band);border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.win{padding:14px 20px;border-top:1px solid var(--line-2);font-size:14px;color:var(--ink-2)}
+.win b{font-weight:600;color:var(--ink)}
+
+@media(max-width:560px){
+  .cal{gap:5px;padding:12px 12px 16px}
+  .d{padding:6px 6px 8px;border-radius:8px}
+  .d .n{font-size:13px}
+  .d .c{font-size:10.5px}
+  .d .sub{display:none}
+  .d .bar{height:3px;margin-top:4px}
+  .dow{font-size:11px;padding-bottom:4px}
+}
+
+/* ---- skeletons ---- */
+.sk{display:block;height:15px;border-radius:5px;background:var(--line-2);animation:pulse 1.1s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+
+/* ---- save bars ---- */
+.save .note.dirty{color:var(--gold)}
+.save .note.done{color:var(--ok)}
+.card.dirty{border-color:var(--gold-line)}
+.tabs button .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--gold);margin-left:7px;vertical-align:middle}
+.savebar{
+  position:fixed;left:50%;bottom:22px;z-index:40;
+  display:none;align-items:center;gap:16px;
+  transform:translateX(-50%) translateY(140%);
+  background:var(--card);border:1px solid var(--gold-line);border-radius:10px;
+  padding:12px 16px;box-shadow:0 8px 28px rgba(0,0,0,.28);
+  transition:transform .22s ease;max-width:calc(100vw - 32px)
+}
+.savebar.show{display:flex;transform:translateX(-50%) translateY(0)}
+.savebar .t{font-size:14px;color:var(--ink-2)}
+@media(max-width:620px){
+  .savebar{left:16px;right:16px;transform:translateY(140%);max-width:none}
+  .savebar.show{transform:translateY(0)}
+}
+
+/* ---- connection banner ---- */
+.conn{display:none;align-items:center;gap:14px;padding:14px 20px;flex-wrap:wrap;
+  border:1px solid var(--gold-line);background:var(--gold-bg);border-radius:10px;margin-bottom:22px}
+.conn.show{display:flex}
+.conn .t{font-size:14.5px;color:var(--gold);flex:1;min-width:240px}
+.conn .t b{font-weight:600;display:block;margin-bottom:2px}
+
+/* ---- freshness marker ---- */
+.live{font-size:13px;color:var(--ink-3);display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.live::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--ok);flex:none}
+.live.stale{color:var(--gold)}
+.live.stale::before{background:var(--gold)}
+
+/* ---- how the guest is told ---- */
+.channel{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.channel .lbl{font-size:13.5px;color:var(--ink-2)}
+.seg2{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg2 button{padding:7px 13px;font-size:13.5px;color:var(--ink-2);border-right:1px solid var(--line);line-height:1.3}
+.seg2 button:last-child{border-right:none}
+.seg2 button.on{background:var(--band);color:var(--ink);font-weight:600}
+.seg2 button:hover{color:var(--ink)}
+
+/* ---- busy and disabled ---- */
+.btn[disabled]{opacity:.5;cursor:default;pointer-events:none}
+.btn.busy{position:relative;color:transparent}
+.btn.busy::after{content:"";position:absolute;inset:0;margin:auto;width:14px;height:14px;
+  border:2px solid var(--ink-2);border-top-color:transparent;border-radius:50%;
+  animation:spin .7s linear infinite}
+.btn.key.busy::after{border-color:var(--on-accent);border-top-color:transparent}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ---- touch targets ---- */
+@media(pointer:coarse){
+  .btn{min-height:44px;padding:11px 16px}
+  .btn.sm{min-height:40px;padding:9px 13px}
+  .seg2 button{min-height:44px}
+  .sw{width:50px;height:30px}
+  .sw::after{width:24px;height:24px}
+  .sw.on::after{left:23px}
+  nav button{min-height:44px}
+  .tabs button{min-height:40px}
+  tbody tr.b td{padding-top:16px;padding-bottom:16px}
+}
+
+/* day timeline */
+.svc{padding:14px 22px 8px;font-size:13px;color:var(--ink-3);border-top:1px solid var(--line-2)}
+.svc:first-child{border-top:none}
+.notrack .slot{grid-template-columns:104px 1fr}
+.slot{display:grid;grid-template-columns:104px 152px 1fr;gap:18px;align-items:center;
+  padding:10px 22px;border-bottom:1px solid var(--line-2)}
+.slot:last-child{border-bottom:none}
+.slot:hover{background:var(--band)}
+.slot .st{font-size:14.5px;font-weight:600;white-space:nowrap}
+.slot .cap{display:flex;align-items:center;gap:10px}
+.slot .sbar{flex:1;height:5px;background:var(--line-2);border-radius:3px;overflow:hidden}
+.slot .sbar i{display:block;height:100%;background:var(--fill);border-radius:3px}
+.slot.full .sbar i{background:var(--gold)}
+.slot .num{font-size:12.5px;color:var(--ink-3);white-space:nowrap;min-width:56px;text-align:right}
+.slot.full .num{color:var(--gold)}
+.slot .guests{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:1px solid var(--line);border-radius:6px;padding:3px 10px;font-size:13px;color:var(--ink-2)}
+.chip b{color:var(--ink);font-weight:600;margin-left:7px}
+.slot.open-slot .st{color:var(--ink-3);font-weight:500}
+.slot .none{font-size:13.5px;color:var(--ink-3)}
+@media(max-width:720px){
+  .slot{grid-template-columns:86px 1fr;gap:10px 12px;padding:10px 14px}
+  .slot .guests{grid-column:1/-1}
+  .svc{padding:12px 14px 6px}
+}
+
+/* transcript */
+.turn{padding:11px 0;border-bottom:1px solid var(--line-2);display:grid;grid-template-columns:76px 1fr;gap:16px;font-size:14.5px}
+.turn:last-child{border-bottom:none}
+.turn .w{color:var(--ink-3);font-size:13.5px}
+.turn.tool{color:var(--ink-3);font-size:13.5px}
+.turn.tool .mono{color:var(--ink-2)}
+
+/* forms */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px 26px}
+.grid.one{grid-template-columns:1fr}
+.grid.three{grid-template-columns:1fr 1fr 1fr}
+.f label{display:block;font-size:14px;font-weight:500;margin-bottom:6px}
+.f input,.f select,.f textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:7px;font:inherit;background:var(--card);color:var(--ink)}
+.f textarea{resize:vertical;min-height:80px}
+.f .help{font-size:13px;color:var(--ink-3);margin-top:6px}
+.save{padding:16px 22px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.save .note{font-size:13.5px;color:var(--ink-3)}
+.tog{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:14px 0;border-bottom:1px solid var(--line-2)}
+.tog:last-child{border-bottom:none}
+.tog b{font-weight:500;display:block;font-size:15px}
+.tog span{font-size:13.5px;color:var(--ink-3)}
+.sw{width:42px;height:24px;border-radius:12px;background:var(--line);position:relative;flex:none;cursor:pointer;transition:background .15s}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:var(--card);transition:left .15s}
+.sw.on{background:var(--accent)}
+.sw.on::after{left:21px;background:var(--on-accent)}
+
+.quick{display:flex;gap:10px;flex-wrap:wrap}
+.quick input{flex:1;min-width:210px;padding:10px 12px;border:1px solid var(--line);border-radius:6px;font:inherit;background:var(--card);color:var(--ink)}
+.tag{display:inline-block;padding:2px 8px;border:1px solid var(--line);border-radius:4px;font-size:12.5px;color:var(--ink-2);margin-right:5px}
+.foot{text-align:center;color:var(--ink-3);font-size:14px;margin-top:26px}
+.empty{padding:28px 22px;color:var(--ink-2)}
+
+@media(max-width:880px){
+  nav{order:3;width:100%}
+  .grid,.grid.three{grid-template-columns:1fr}
+  .col-hide{display:none}
+  .bar-in,.page{padding-left:16px;padding-right:16px}
+  thead th,tbody td,tr.block td{padding-left:14px;padding-right:14px}
+}
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="bar-in">
+    <div class="brand"><span class="mark"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h9"/></svg></span>Tableline</div>
+    <nav id="nav">
+      <button data-v="bookings" class="on">Bookings</button>
+      <button data-v="calendar">Calendar</button>
+      <button data-v="calls">Calls</button>
+      <button data-v="guests">Guests</button>
+      <button data-v="menu">Menu</button>
+      <button data-v="settings">Settings</button>
+    </nav>
+    <div class="acct"><b id="acctName">&nbsp;</b><span id="acctSub">&nbsp;</span></div>
+    <div class="theme" id="theme">
+      <button data-t="light">Light</button>
+      <button data-t="dark">Dark</button>
+      <button data-t="black">Black</button>
+    </div>
+  </div>
+</header>
+
+<div class="page">
+
+<div class="savebar" id="savebar" role="status" aria-live="polite">
+  <span class="t" id="savebarText">You have unsaved changes on this page.</span>
+  <button class="btn" id="discardAll">Discard</button>
+  <button class="btn key" id="saveAll">Save everything</button>
+</div>
+
+<div class="conn" id="conn">
+  <span class="t"><b id="connTitle">You're offline</b><span id="connBody">This list was last updated a few minutes ago and may be out of date. Don't seat from it until it reconnects.</span></span>
+  <button class="btn" id="connRetry">Try again</button>
+</div>
+
+
+<!-- ================= BOOKINGS ================= -->
+<section id="v-bookings">
+  <div class="head">
+    <div><h1>Bookings</h1><p>Everything the agent took, as it stands now.</p></div>
+    <div class="tabs" id="daytabs"><button class="on">Tonight</button><button>Tomorrow</button><button>This week</button></div>
+  </div>
+
+  <section class="card" id="pending">
+    <div class="card-h"><div><h2>Waiting on you</h2><p>Everything else is already confirmed.</p></div></div>
+    <table><tbody>
+      <tr>
+        <td style="width:110px" id="pT">7:15 PM</td>
+        <td><span id="pN">Kulkarni</span>
+          <div class="meta" id="pW">Loading.</div>
+        </td>
+        <td class="r" style="width:330px">
+          <div class="channel" style="justify-content:flex-end">
+            <span class="lbl">Tell them by</span>
+            <span class="seg2" id="chan">
+              <button data-c="text" class="on">Text</button>
+              <button data-c="call">Call</button>
+              <button data-c="none">Nothing</button>
+            </span>
+          </div>
+          <div class="acts" style="justify-content:flex-end">
+            <button class="btn key" id="acceptBtn">Accept</button>
+            <button class="btn no" id="declineBtn">Decline</button>
+          </div>
+        </td>
+      </tr>
+    </tbody></table>
+  </section>
+
+  <section class="card">
+    <div class="card-h">
+      <div><h2 id="dayTitle">Tonight</h2><p id="daySummary">Loading.</p></div>
+      <div class="search">
+        <span class="live" id="live">Updated just now</span>
+        <input id="q" type="search" placeholder="Name, number or reference" aria-label="Search bookings">
+        <button class="btn">Add a booking</button>
+      </div>
+    </div>
+    <table>
+      <thead><tr>
+        <th style="width:108px">Time</th><th>Guest</th>
+        <th style="width:78px" class="r">Covers</th>
+        <th style="width:128px">Status</th>
+        <th style="width:108px" class="col-hide">Reference</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </section>
+  <p class="foot" id="bookingsFoot"></p>
+</section>
+
+<!-- ================= CALENDAR ================= -->
+<section id="v-calendar" class="hide" style="max-width:880px">
+  <div class="head">
+    <div><h1>Calendar</h1><p>How full each day is, and which days you've closed.</p></div>
+  </div>
+
+  <section class="card">
+    <div class="card-h">
+      <div class="calbar">
+        <button class="arrow" onclick="moveMonth(-1)" aria-label="Previous month"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
+        <span class="mo" id="moLabel">October 2026</span>
+        <button class="arrow" onclick="moveMonth(1)" aria-label="Next month"><svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>
+        <button class="btn sm" onclick="goToday()">Today</button>
+      </div>
+      <button class="btn">Block a date</button>
+    </div>
+    <div class="cal" id="cal"></div>
+    <div class="save"><span class="note" id="calNote"></span></div>
+  </section>
+
+  <section class="card" id="dayCard">
+    <div class="card-h">
+      <div><h2 id="dayHead">Thursday 16 October</h2><p id="daySub">Tap a day above to see it.</p></div>
+      <div class="acts">
+        <button class="btn key" id="vTime">By time</button>
+        <button class="btn" id="vList">As a list</button>
+        <button class="btn">Close this day</button>
+        <button class="btn">Change capacity</button>
+      </div>
+    </div>
+    <div id="dayBody"></div>
+  </section>
+
+  <section class="card">
+    <div class="card-h"><div><h2>Blocked dates</h2><p>The agent takes nothing on these, and says why.</p></div></div>
+    <table>
+      <thead><tr><th style="width:180px">Date</th><th>Reason</th><th style="width:140px">Effect</th><th style="width:100px" class="r"></th></tr></thead>
+      <tbody id="blockedRows"></tbody>
+    </table>
+  </section>
+</section>
+
+<!-- ================= CALLS ================= -->
+<section id="v-calls" class="hide">
+  <div class="head">
+    <div><h1>Calls</h1><p>Every call the agent answered that would otherwise have rung out.</p></div>
+    <div class="tabs" id="calltabs"><button class="on">Today</button><button>30 days</button><button>90 days</button><button>12 months</button></div>
+  </div>
+  <section class="card">
+    <div class="card-h"><div><h2 id="callsTitle">Today</h2><p>Tap a call to read what was said and hear it.</p></div></div>
+    <table>
+      <thead><tr><th style="width:100px">Time</th><th>Number</th><th style="width:88px" class="col-hide">Length</th><th style="width:176px">Outcome</th><th style="width:108px" class="col-hide">Booking</th></tr></thead>
+      <tbody id="calls"></tbody>
+    </table>
+  </section>
+  <section class="card">
+    <div class="card-h"><div><h2>Where it fell short</h2><p>Calls the agent could not finish. These are worth reading.</p></div></div>
+    <table><tbody>
+      <tr class="b"><td style="width:100px">1:44 PM</td><td>+91 90210 33417<div class="meta">Wanted 8:00 PM on a day you had closed. It offered nothing else.</div></td><td class="r" style="width:130px"><span class="pill no">Lost</span></td></tr>
+      <tr class="b"><td>12:06 PM</td><td>Withheld<div class="meta">Asked about gift vouchers. Nothing in the agent's notes covers it.</div></td><td class="r"><span class="pill no">Unanswered</span></td></tr>
+    </tbody></table>
+  </section>
+</section>
+
+<!-- ================= GUESTS ================= -->
+<section id="v-guests" class="hide">
+  <div class="head">
+    <div><h1>Guests</h1><p>Built from the numbers that have called. The agent greets them by name.</p></div>
+    <div class="tabs" id="guesttabs"><button class="on">All</button><button>Regulars</button><button>No-shows</button><button>Do not call</button></div>
+  </div>
+  <section class="card">
+    <div class="card-h"><div><h2 id="guestCount">Guests</h2><p>Built from the numbers that have called.</p></div><button class="btn">Export CSV</button></div>
+    <table>
+      <thead><tr><th>Name</th><th style="width:170px" class="col-hide">Number</th><th style="width:86px" class="r">Visits</th><th style="width:98px" class="r">No-shows</th><th style="width:140px">Last seen</th></tr></thead>
+      <tbody id="guestRows"></tbody>
+    </table>
+  </section>
+</section>
+
+<!-- ================= MENU ================= -->
+<section id="v-menu" class="hide">
+  <div class="head">
+    <div><h1>Menu</h1><p>What the agent knows you serve. It answers questions from this, it never reads it out.</p></div>
+    <div class="tabs"><button class="on">Dishes</button><button>Set menus</button></div>
+  </div>
+  <section class="card">
+    <div class="card-h"><div><h2>Add a dish</h2><p>Type the name and the price. Everything else is optional.</p></div></div>
+    <div class="card-b">
+      <div class="quick">
+        <input id="dishIn" placeholder="Burger 40" aria-label="Dish and price">
+        <button class="btn key" id="dishAdd">Add</button>
+        <button class="btn">Upload a photo of the menu</button>
+      </div>
+      <p style="font-size:13px;color:var(--ink-3);margin-top:11px">Upload works from a PDF or a photo. You correct whatever it reads wrong.</p>
+    </div>
+  </section>
+  <section class="card">
+    <div class="card-h"><div><h2>Mains</h2><p>14 dishes. Turn one off when the kitchen runs out.</p></div></div>
+    <table>
+      <thead><tr><th>Dish</th><th style="width:230px" class="col-hide">Notes for the agent</th><th style="width:96px" class="r">Price</th><th style="width:106px" class="r">Available</th></tr></thead>
+      <tbody id="menuRows">
+        <tr><td>Goan fish curry<div class="meta"><span class="tag">Contains fish</span><span class="tag">Spicy</span></div></td><td class="col-hide">Our most ordered dish</td><td class="r" data-money="420">₹ 420</td><td class="r"><span class="sw on"></span></td></tr>
+        <tr><td>Prawn balchão<div class="meta"><span class="tag">Shellfish</span><span class="tag">Spicy</span></div></td><td class="col-hide">Hot, warn people</td><td class="r" data-money="520">₹ 520</td><td class="r"><span class="sw on"></span></td></tr>
+        <tr><td>Mushroom xacuti<div class="meta"><span class="tag">Vegan</span></div></td><td class="col-hide">Our main vegan option</td><td class="r" data-money="360">₹ 360</td><td class="r"><span class="sw on"></span></td></tr>
+        <tr class="past"><td>Pork vindaloo<div class="meta"><span class="tag">Pork</span></div></td><td class="col-hide">Off tonight</td><td class="r" data-money="480">₹ 480</td><td class="r"><span class="sw"></span></td></tr>
+      </tbody>
+    </table>
+  </section>
+</section>
+
+<!-- ================= SETTINGS ================= -->
+<section id="v-settings" class="hide">
+  <div class="head">
+    <div><h1>Settings</h1><p>Your venue, and how the agent behaves on the phone.</p></div>
+    <div class="tabs" id="stabs">
+      <button class="on" data-s="venue">Venue</button><button data-s="agent">Agent</button>
+      <button data-s="messages">Messages</button><button data-s="account">Account</button>
+    </div>
+  </div>
+
+  <div id="s-venue">
+    <section class="card">
+      <div class="card-h"><div><h2>Where you are</h2><p>How prices, times and dates are written and spoken.</p></div></div>
+      <div class="card-b grid three">
+        <div class="f"><label for="fCountry">Country</label><select id="fCountry" data-cfg="locale.country"></select>
+          <div class="help" id="holNote">Picking one fills in the rest below.</div></div>
+        <div class="f"><label for="fCurrency">Currency</label><select id="fCurrency" data-cfg="locale.currency"></select>
+          <div class="help" id="curHelp">The agent speaks amounts out loud in this.</div></div>
+        <div class="f"><label for="fTz">Timezone</label><select id="fTz" data-cfg="locale.timezone"></select>
+          <div class="help">Every time on this dashboard is shown in it.</div></div>
+        <div class="f"><label for="fClock">Clock</label><select id="fClock" data-cfg="locale.clock">
+          <option value="12">12 hour (7:30 PM)</option><option value="24">24 hour (19:30)</option></select></div>
+        <div class="f"><label for="fDate">Date format</label><select id="fDate" data-cfg="locale.date_format">
+          <option value="DMY">16 September 2026</option><option value="MDY">September 16, 2026</option>
+          <option value="YMD">2026-09-16</option></select></div>
+        <div class="f"><label for="fLang">Languages the agent speaks</label>
+          <select id="fLang" multiple size="1" data-cfg="voice.languages"></select>
+          <div class="help">Hold to pick more than one. It follows whichever the caller uses.</div></div>
+      </div>
+      <div class="save"><button class="btn key">Save changes</button><span class="note">Holidays and currency follow the country.</span></div>
+    </section>
+
+    <section class="card">
+      <div class="card-h"><div><h2>The venue</h2><p>What this business is, and how to find it.</p></div></div>
+      <div class="card-b grid">
+        <div class="f"><label>Name</label><input data-cfg="identity.display_name"><div class="help">The agent says this when it answers.</div></div>
+        <div class="f"><label>Who answers</label><input data-cfg="identity.agent_name" placeholder="Meera"><div class="help">The name the agent gives itself.</div></div>
+        <div class="f"><label>Address</label><textarea data-cfg="identity.address"></textarea></div>
+        <div class="f"><label>What you are</label><input data-cfg="identity.description" placeholder="modern North Indian food"></div>
+        <div class="f"><label>Price for two</label><input id="fSpend" data-cfg="identity.price_band"></div>
+        <div class="f"><label>Your public link</label><input data-cfg="identity.public_url" placeholder="https://"><div class="help">Used in the manage link on confirmations.</div></div>
+      </div>
+      <div class="save"><button class="btn key">Save changes</button><span class="note">The agent uses it from the next call.</span></div>
+    </section>
+
+    <section class="card" id="hoursCard" data-section="hours">
+      <div class="card-h"><div><h2>Hours</h2><p>When you're open. Leave a day unticked and the agent says you're closed.</p></div></div>
+      <div class="card-b" id="hoursRows"></div>
+      <div class="save"><button class="btn key">Save changes</button><span class="note">A day you close keeps the bookings already taken.</span></div>
+    </section>
+
+    <section class="card">
+      <div class="card-h"><div><h2>Capacity</h2><p>Optional. Leave it off and the agent takes every booking, however busy you get.</p></div></div>
+      <div class="card-b" style="padding-bottom:4px">
+        <div class="tog" style="border-bottom:none;padding-top:0">
+          <div><b>Keep track of how full you are</b><span>Turn this on and the agent stops booking once a time is full. Off, and it books everything.</span></div>
+          <span class="sw on" id="capSwitch" data-cfg="capacity.enabled"></span>
+        </div>
+      </div>
+      <div class="card-b grid three" id="capFields" style="padding-top:8px">
+        <div class="f"><label>Total <span data-unit-plural>covers</span></label><input type="number" min="0" data-cfg="hours.total_units"><div class="help">Everyone you can take at once.</div></div>
+        <div class="f"><label>Held back for walk-ins</label><input type="number" min="0" max="90" data-cfg="capacity.buffer_pct"><div class="help" id="bufferHelp">A percentage. The rest is yours at the door.</div></div>
+        <div class="f"><label>Booking slots</label><select data-cfg="capacity.slot_minutes">
+          <option value="15">Every 15 minutes</option><option value="30">Every 30 minutes</option><option value="60">Every hour</option></select></div>
+        <div class="f"><label>A booking occupies</label><input type="number" min="5" step="5" data-cfg="capacity.turn_minutes"><div class="help">Minutes. Must divide evenly into your slot length.</div></div>
+      </div>
+      <div class="save"><button class="btn key">Save changes</button><span class="note">Changes apply to new bookings only.</span></div>
+    </section>
+
+    <section class="card">
+      <div class="card-h"><div><h2>How far ahead people can book</h2>
+        <p>The window moves forward with the date. Set it to 5 days and the agent always has the next 5 days open, never more.</p></div></div>
+      <div class="card-b grid three">
+        <div class="f"><label>How the window works</label>
+          <select id="winMode" data-cfg="booking_window.mode"><option value="rolling">Moves forward each day</option><option value="fixed">Stops on a set date</option></select>
+          <div class="help">A moving window suits most places. A set date suits a season or a pop-up.</div>
+        </div>
+        <div class="f" id="winDaysF"><label>Days open at any time</label>
+          <input id="winDays" type="number" min="1" max="365" data-cfg="booking_window.days">
+          <div class="help">Counting today as the first day.</div>
+        </div>
+        <div class="f hide" id="winDateF"><label>Last day you'll take</label>
+          <input id="winDate" type="date" data-cfg="booking_window.until">
+          <div class="help">After this the agent stops booking entirely.</div>
+        </div>
+      </div>
+      <div class="win" id="winPreview"></div>
+      <div class="save"><button class="btn key">Save changes</button>
+        <span class="note">Bookings already taken beyond the window are kept.</span></div>
+    </section>
+
+    <section class="card">
+      <div class="card-h"><div><h2>What the agent may decide alone</h2><p>Anything outside these comes to you instead.</p></div></div>
+      <div class="card-b grid three">
+        <div class="f"><label>Books a party of up to</label><input type="number" min="1" data-cfg="policy.auto_approve_max_party"><div class="help">Bigger parties wait for your yes.</div></div>
+        <div class="f"><label>Largest it will ever take</label><input type="number" min="1" data-cfg="policy.max_party_size"></div>
+        <div class="f"><label>Needs this much notice</label><input type="number" min="0" data-cfg="policy.min_lead_minutes"><div class="help">Minutes.</div></div>
+        <div class="f"><label>You have</label><input type="number" min="5" data-cfg="policy.overflow_timeout_minutes"><div class="help">Minutes to answer before it decides itself.</div></div>
+        <div class="f"><label>Or until</label><input type="time" data-cfg="policy.overflow_cutoff_local_time"><div class="help">Whichever comes first, on the day.</div></div>
+        <div class="f"><label>Waiting list per slot</label><input type="number" min="0" data-cfg="policy.max_pending_per_slot"></div>
+        <div class="f"><label>Holds a table for</label><input type="number" min="30" data-cfg="policy.hold_ttl_seconds"><div class="help">Seconds, while it takes the caller's details.</div></div>
+      </div>
+      <div class="save"><button class="btn key">Save changes</button><span class="note">Silence still confirms — you only ever have to decline.</span></div>
+    </section>
+
+  </div>
+
+  <div id="s-agent" class="hide">
+    <section class="card">
+      <div class="card-h"><div><h2>Voice</h2><p>How it sounds. Listen before you save.</p></div>
+        <a class="btn" id="callAgent" href="#">Call the agent now</a></div>
+      <div class="card-b grid three">
+        <div class="f"><label>Voice</label><select id="fVoice" data-cfg="voice.voice_id"></select></div>
+        <div class="f"><label>Manner</label><input data-cfg="agent.tone" placeholder="warm, quick and genuinely helpful"></div>
+        <div class="f" style="grid-column:1/-1"><label>How it answers</label><input data-cfg="identity.greeting"><div class="help">Keep it short. People start talking over long greetings. {display_name} and {agent_name} are filled in.</div></div>
+      </div>
+      <div class="save"><button class="btn key">Save changes</button><span class="note">Takes effect on the next call.</span></div>
+    </section>
+
+    <section class="card">
+      <div class="card-h"><div><h2>What to say and not say</h2><p>Added to how it speaks. It cannot change how booking works.</p></div></div>
+      <div class="card-b grid one">
+        <div class="f"><label>Always mention</label><textarea data-cfg="agent.extra_instructions" placeholder="Tables are held for 15 minutes. After that we give them away."></textarea></div>
+        <div class="f"><label>Never say</label><textarea data-cfg="agent.never_say" data-list="lines" placeholder="One per line."></textarea>
+          <div class="help">One per line. The agent is told never to mention these.</div></div>
+      </div>
+      <div class="save"><button class="btn key">Save changes</button><span class="note">Last edited shows in Account.</span></div>
+    </section>
+
+    <section class="card">
+      <div class="card-h"><div><h2>What it can do</h2><p>Turn a whole behaviour off for this venue.</p></div></div>
+      <div class="card-b">
+        <div class="tog"><div><b>Offer a waiting list when a time is full</b><span>It tells the caller when you'll decide, and they get a text either way.</span></div><span class="sw on" data-cfg="features.overflow"></span></div>
+        <div class="tog"><div><b>Answer questions about the menu</b><span>It answers from what you've entered. It never reads the menu out.</span></div><span class="sw" data-cfg="features.menu"></span></div>
+        <div class="tog"><div><b>Close on public holidays</b><span>Holidays for your country, kept up to date. Open any of them from the list above.</span></div><span class="sw on" data-cfg="locale.observe_public_holidays"></span></div>
+      </div>
+      <div class="save"><button class="btn key">Save changes</button><span class="note">The agent picks this up on the next call.</span></div>
+    </section>
+
+    <section class="card">
+      <div class="card-h"><div><h2>Allergies</h2><p>This one is fixed and cannot be turned off.</p></div></div>
+      <div class="card-b"><p style="color:var(--ink-2);max-width:66ch">The agent never confirms a dish is safe. It writes the allergy on the booking and tells the caller the kitchen will go through it when they arrive.</p></div>
+    </section>
+  </div>
+
+  <div id="s-messages" class="hide">
+    <section class="card">
+      <div class="card-h"><div><h2>What the guest gets</h2><p>Sent by text. Keep them short — these are read on a lock screen.</p></div></div>
+      <div class="card-b grid one">
+        <div class="f"><label>When a booking is confirmed</label><textarea data-cfg="messaging.templates.confirmed"></textarea></div>
+        <div class="f"><label>The day before</label><textarea data-cfg="messaging.templates.reminder"></textarea></div>
+        <div class="f"><label>When you decline a booking</label><textarea data-cfg="messaging.templates.declined"></textarea></div>
+        <div class="f"><label>When a booking is cancelled</label><textarea data-cfg="messaging.templates.cancelled"></textarea></div>
+        <div class="f"><label>When they're on the waiting list</label><textarea data-cfg="messaging.templates.pending"></textarea></div>
+      </div>
+      <div class="help" id="fieldHelp" style="padding:0 20px 16px"></div>
+      <div class="save"><button class="btn key">Save changes</button><span class="note">A field the system doesn't know is refused rather than sent as text.</span></div>
+    </section>
+
+    <section class="card">
+      <div class="card-h"><div><h2>When they're sent</h2><p>Nothing goes out at three in the morning.</p></div></div>
+      <div class="card-b grid three">
+        <div class="f"><label>Send a confirmation</label><select data-cfg="messaging.send_confirmation"><option value="true">Yes</option><option value="false">No</option></select></div>
+        <div class="f"><label>Send a reminder</label><select data-cfg="messaging.send_reminder"><option value="true">Yes</option><option value="false">No</option></select></div>
+        <div class="f"><label>Reminder goes out</label><input type="number" min="1" max="168" data-cfg="messaging.reminder_hours_before"><div class="help">Hours before the booking.</div></div>
+        <div class="f"><label>Tonight's list at</label><input type="time" data-cfg="messaging.digest_local_time"></div>
+        <div class="f"><label>Nudge before arrival</label><input type="number" min="0" max="240" data-cfg="messaging.arrival_nudge_minutes"><div class="help">Minutes. Zero turns it off.</div></div>
+        <div class="f"><label>The agent may ring between</label><input type="time" data-cfg="outbound.window_start"></div>
+        <div class="f"><label>and</label><input type="time" data-cfg="outbound.window_end"></div>
+      </div>
+      <div class="save"><button class="btn key">Save changes</button><span class="note">Anyone marked do-not-call is never rung, whatever this says.</span></div>
+    </section>
+
+    <section class="card">
+      <div class="card-h"><div><h2>How guests are told</h2><p>When you accept or decline something, this is what happens by default.</p></div></div>
+      <div class="card-b grid">
+        <div class="f"><label>When you accept</label><select data-cfg="telling_guest.on_accept">
+          <option value="text">Send a text</option><option value="call">The agent rings them</option>
+          <option value="ask">Ask me each time</option><option value="none">Do nothing</option></select>
+          <div class="help">You can still change it on the booking itself.</div></div>
+        <div class="f"><label>When you decline</label><select data-cfg="telling_guest.on_decline">
+          <option value="call">The agent rings them</option><option value="text">Send a text</option>
+          <option value="ask">Ask me each time</option><option value="none">Do nothing</option></select>
+          <div class="help">A decline lands better spoken than written.</div></div>
+      </div>
+      <div class="save"><button class="btn key">Save changes</button><span class="note">The result always says who was told.</span></div>
+    </section>
+
+    <section class="card">
+      <div class="card-h"><div><h2>What you get</h2><p>On this dashboard. Nothing goes to WhatsApp or email.</p></div></div>
+      <div class="card-b">
+        <div class="tog"><div><b>Sound when something arrives</b><span>Plays wherever this is open. A tap anywhere turns it on for that session.</span></div><span class="sw on" data-local="sound"></span></div>
+        <div class="tog"><div><b>A different sound for anything waiting on you</b><span>So you know without looking whether it needs a decision.</span></div><span class="sw on" data-local="soundDecide"></span></div>
+        <div class="tog"><div><b>Mark new rows until someone opens them</b><span>For when the room is loud and the sound gets missed.</span></div><span class="sw on" data-local="markUnseen"></span></div>
+        <div class="tog"><div><b>Keep the screen awake</b><span>For a tablet left open at the door. Turn it off on a phone.</span></div><span class="sw" data-local="wakeLock"></span></div>
+      </div>
+    </section>
+  </div>
+
+  <div id="s-account" class="hide">
+    <section class="card">
+      <div class="card-h"><div><h2>Your number</h2><p>Calls come here when your own line is busy or nobody picks up.</p></div></div>
+      <div class="card-b grid">
+        <div class="f"><label>Agent number</label><input class="mono" id="fAgentNumber" readonly></div>
+        <div class="f"><label>Your timezone</label><input id="fTzShown" readonly></div>
+        <div class="f" style="grid-column:1/-1"><label>How to set it up</label><textarea id="fForwarding" readonly rows="3"></textarea>
+          <div class="help">Dialled on your own line, not here. Codes vary by carrier.</div></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-h"><div><h2>This month</h2><p>What the agent has done since the first.</p></div></div>
+      <table><tbody id="statRows"></tbody></table>
+    </section>
+
+    <section class="card">
+      <div class="card-h"><div><h2>What changed</h2><p>Every edit to your settings, so you can see what broke.</p></div></div>
+      <table>
+        <thead><tr><th style="width:190px">When</th><th>What</th><th style="width:120px" class="col-hide">Who</th></tr></thead>
+        <tbody id="changeRows"></tbody>
+      </table>
+    </section>
+  </div>
+</section>
+
+</div>
+
+<script src="/static/dashboard/app.js"></script>
+</body>
+</html>

@@ -4,15 +4,15 @@ import asyncio
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
-from calling_agent import restaurant
+from calling_agent import agent_tools
 from calling_agent import session as session_module
 from calling_agent.agent_spec import AgentDefinition
 from calling_agent.config import settings
 from calling_agent.main import app
+from tests.conftest import committed, future_slot
 
 
 class Transport:
@@ -61,7 +61,7 @@ def test_public_experience_has_no_key_and_does_not_claim_live_readiness(monkeypa
     monkeypatch.setattr(settings, "assemblyai_api_key", "")
     body = TestClient(app).get("/experience").json()
     assert body["live_configured"] is False
-    assert body["booking_storage"] == "memory"
+    assert body["booking_storage"] == "postgres"
     assert "assemblyai_api_key" not in body
 
 
@@ -178,35 +178,57 @@ async def test_cancelled_pump_cleans_up_worker_and_guard():
     ]
 
 
-def test_receipts_only_accompany_actual_bookings(monkeypatch):
-    monkeypatch.setattr(restaurant, "BOOKINGS", restaurant.BookingStore())
-    tomorrow = (datetime.now(UTC) + timedelta(days=1)).date().isoformat()
-    rejected = restaurant.book_table({"name": "Alex", "party_size": 0})
-    assert not hasattr(rejected, "receipt")
-    result = restaurant.book_table(
-        {"name": "Alex", "party_size": 4, "date": tomorrow, "time": "19:00"}
+def test_structured_data_only_accompanies_actual_bookings(business):
+    """A refusal carries no booking data, so no UI can render one from it.
+
+    The in-memory book these used to check was replaced (PRD §17); the
+    behaviour they pin -- evidence comes from the write, never from a
+    hopeful read of the sentence -- is the same and still matters.
+    """
+    at = future_slot(business)
+
+    rejected = agent_tools.hold(business, {"date": at.date().isoformat(), "units": 0})
+    assert rejected.data.get("ok") is not True
+    assert "hold_id" not in rejected.data
+
+    held = agent_tools.hold(
+        business,
+        {"date": at.date().isoformat(), "time": at.strftime("%H:%M"), "units": 4},
     )
-    assert result.startswith("Booked:")
-    assert result.receipt["name"] == "Alex"
-    assert result.receipt["status"] == "confirmed"
-    reference = result.receipt["reference"]
-    cancelled = restaurant.cancel_booking({"reference": reference})
-    assert cancelled.receipt["status"] == "cancelled"
+    assert held.data["ok"]
+
+    booked = agent_tools.confirm(
+        business, {"hold_id": held.data["hold_id"], "name": "Alex", "phone": "+910000000123"}
+    )
+    assert booked.startswith("Booked:")
+    assert booked.data["name"] == "Alex"
+    assert booked.data["status"] == "confirmed"
+
+    cancelled = agent_tools.cancel_booking(
+        business, {"reference": booked.data["reference"], "name": "Alex"}
+    )
+    assert cancelled.data["status"] == "cancelled"
 
 
-def test_simultaneous_reservations_do_not_overbook(monkeypatch):
-    store = restaurant.BookingStore()
-    monkeypatch.setattr(restaurant, "BOOKINGS", store)
-    tomorrow = (datetime.now(UTC) + timedelta(days=1)).date().isoformat()
+def test_simultaneous_reservations_do_not_overbook(business):
+    """Eight callers, room for six. The counter is the assertion."""
+    at = future_slot(business)
     barrier = threading.Barrier(8)
 
     def book(index):
         barrier.wait()
-        return restaurant.book_table(
-            {"name": "Guest " + str(index), "date": tomorrow, "time": "19:00", "party_size": 2}
+        held = agent_tools.hold(
+            business,
+            {"date": at.date().isoformat(), "time": at.strftime("%H:%M"), "units": 2},
+        )
+        if not held.data.get("ok"):
+            return held
+        return agent_tools.confirm(
+            business, {"hold_id": held.data["hold_id"], "name": f"Guest {index}"}
         )
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(book, range(8)))
+
     assert sum(result.startswith("Booked:") for result in results) == 6
-    assert sum(booking.party_size for booking in store.bookings.values()) == 12
+    assert committed(business.id, at) == 12

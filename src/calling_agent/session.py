@@ -16,11 +16,12 @@ from websockets.asyncio.client import ClientConnection
 from . import protocol as p
 from .agent_config import (
     FALLBACK_VOICE,
-    RESTAURANT,
     build_session_resume,
     build_session_update,
 )
 from .agent_spec import AgentDefinition
+from .agent_tools import default_agent
+from .call_log import NullRecorder
 from .config import settings
 from .transport.base import AudioTransport
 
@@ -37,11 +38,17 @@ class AgentSession:
         resume_session_id: str | None = None,
         voice: str | None = None,
         agent: AgentDefinition | None = None,
+        recorder=None,
     ) -> None:
         self._transport = transport
+        # Writes the call log. A recorder that records nothing is the default,
+        # so the relay never branches on whether anyone is listening.
+        self._recorder = recorder or NullRecorder()
         # What this session IS. The relay below knows nothing about it beyond
         # these two uses -- the opening payload, and running a tool call.
-        self._agent = agent or RESTAURANT
+        # Resolved per session rather than imported: which business this
+        # relay is answering for is a database question now, not a constant.
+        self._agent = agent or default_agent()
         self._resume_session_id = resume_session_id
         self._voice = voice
         self._session_id: str | None = None
@@ -68,6 +75,19 @@ class AgentSession:
         self._tool_cache: dict[str, dict] = {}
 
     async def run(self) -> None:
+        """Run the call, and write the log however it ends.
+
+        The flush is in a finally because every way a call ends -- hung up,
+        refused upstream, crashed -- is a call somebody may need to look at.
+        A transcript that only survives the happy path is missing exactly the
+        calls the "Where it fell short" screen exists for.
+        """
+        try:
+            await self._run_session()
+        finally:
+            await asyncio.to_thread(self._recorder.flush)
+
+    async def _run_session(self) -> None:
         """Open the upstream connection and pump audio until either side ends."""
         if not settings.assemblyai_api_key:
             await self._transport.send_event(
@@ -288,6 +308,12 @@ class AgentSession:
                 raise RuntimeError("tool queue full") from None
             return
 
+        elif kind == p.TRANSCRIPT_USER:
+            self._recorder.user(msg.get("text") or msg.get("transcript") or "")
+
+        elif kind == p.TRANSCRIPT_AGENT:
+            self._recorder.agent(msg.get("text") or msg.get("transcript") or "")
+
         elif kind == p.SESSION_ERROR:
             log.error(
                 "upstream session error: code=%s message=%s",
@@ -346,6 +372,7 @@ class AgentSession:
             }
             if receipt := getattr(result, "receipt", None):
                 activity["receipt"] = receipt
+            self._recorder.tool(name, args, str(result), is_error)
             # Flush ready results before announcing completion to the browser.
             if not self._reply_active:
                 await self._flush_tool_results(upstream)
