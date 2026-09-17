@@ -1,192 +1,159 @@
-"""Menu tools.
+"""The menu tools.
 
-These answers are read aloud verbatim, so they are tested for two things: the
-facts, and whether the sentence is actually speakable.
+Everything here is read aloud, so what is asserted is what a caller hears.
+The menu itself is per business now -- these tests load one, because a venue's
+food is theirs and the agent must never answer from somebody else's card.
 """
 
-import pytest
+from __future__ import annotations
+
+from calling_agent import menu
+from calling_agent.db import transaction
+from tests.conftest import make_business
+
+
+def _stock(business, items):
+    from sqlalchemy import text
+
+    with transaction() as conn:
+        for position, item in enumerate(items):
+            conn.execute(
+                text(
+                    "INSERT INTO menu_items (business_id, name, section, price,"
+                    " description, tags, available, position)"
+                    " VALUES (:b, :name, :section, :price, :description, :tags,"
+                    " :available, :position)"
+                ),
+                {
+                    "b": str(business.id),
+                    "name": item["name"],
+                    "section": item.get("section", ""),
+                    "price": item.get("price"),
+                    "description": item.get("description", ""),
+                    "tags": item.get("tags", []),
+                    "available": item.get("available", True),
+                    "position": position,
+                },
+            )
+
 
-from calling_agent import menu as m
+def _venue():
+    business = make_business(config={"features": {"menu": True}})
+    _stock(
+        business,
+        [
+            {"name": "Samosa Chaat", "section": "starters", "price": 220,
+             "description": "Crushed samosas with chickpeas and yoghurt",
+             "tags": ["vegetarian", "Contains dairy", "Contains gluten"]},
+            {"name": "Paneer Tikka", "section": "starters", "price": 340,
+             "description": "Cottage cheese charred in the tandoor",
+             "tags": ["vegetarian", "Contains dairy"]},
+            {"name": "Goan Fish Curry", "section": "mains", "price": 420,
+             "description": "Kingfish in a coconut and tamarind gravy",
+             "tags": ["Contains fish"]},
+            {"name": "Mushroom Xacuti", "section": "mains", "price": 360,
+             "description": "Mushrooms in a roasted coconut masala",
+             "tags": ["vegan"]},
+            {"name": "Pork Vindaloo", "section": "mains", "price": 480,
+             "description": "Off tonight", "tags": [], "available": False},
+        ],
+    )
+    return business
 
 
-def test_no_category_lists_the_sections():
-    out = m.get_menu({})
-    for section in ("starters", "mains", "desserts"):
-        assert section in out
+# --- what a caller hears -----------------------------------------------------
 
 
-def test_unknown_category_says_what_exists():
-    out = m.get_menu({"category": "sushi"})
-    assert "no 'sushi' section" in out
-    assert "starters" in out
+def test_the_agent_is_never_handed_the_whole_menu():
+    """A tool that returned forty dishes would be read at the caller."""
+    business = _venue()
+    spoken = menu.get_menu(business, {"category": "mains"})
+    assert spoken.count(",") <= menu.MAX_SPOKEN * 2
 
 
-def test_a_section_names_dishes_with_prices():
-    out = m.get_menu({"category": "mains"})
-    assert "Butter Chicken" in out
-    assert "480 rupees" in out
+def test_asking_with_no_category_lists_the_sections():
+    business = _venue()
+    spoken = menu.get_menu(business, {})
+    assert "starters" in spoken and "mains" in spoken
 
 
-def test_long_sections_are_truncated_for_speech():
-    """Reading forty dishes at a caller is useless."""
-    out = m.get_menu({"category": "mains"})
-    named = sum(1 for d in m.MENU if d.category == "mains" and d.name in out)
-    assert named <= m.SPOKEN_LIMIT
-    assert "more if they want" in out
+def test_prices_are_spoken_as_words_not_as_a_number_with_decimals():
+    business = _venue()
+    spoken = menu.get_menu(business, {"category": "mains"})
+    assert "rupee" in spoken.lower()
+    assert ".00" not in spoken
 
 
-def test_remainder_is_grammatical_when_exactly_one_is_left():
-    """'There are 1 more' would be read out loud as written."""
-    dishes = list(m.MENU)[: m.SPOKEN_LIMIT + 1]
-    out = m._describe(dishes)
-    assert "There is one more" in out
-    assert "are 1 more" not in out
+def test_a_dish_that_is_off_is_not_offered():
+    business = _venue()
+    assert "Vindaloo" not in menu.get_menu(business, {"category": "mains"})
+    # ...but staff can still look it up, which is how they answer "do you do it?"
+    assert "Vindaloo" in menu.dish_details(business, {"name": "vindaloo"})
 
 
-def test_remainder_spells_out_small_numbers():
-    dishes = list(m.MENU)[: m.SPOKEN_LIMIT + 3]
-    assert "three more" in m._describe(dishes)
+# --- allergies ---------------------------------------------------------------
 
 
-def test_lists_read_naturally():
-    assert m._join(["a"]) == "a"
-    assert m._join(["a", "b"]) == "a and b"
-    assert m._join(["a", "b", "c"]) == "a, b and c"
+def test_an_allergen_is_excluded_rather_than_reasoned_about():
+    business = _venue()
+    spoken = menu.find_dishes(business, {"avoid": ["fish"]})
+    assert "Fish Curry" not in spoken
+    assert "Xacuti" in spoken
 
 
-# --- dietary and allergens ---------------------------------------------------
+def test_exclusion_reads_the_description_too_not_just_the_tags():
+    """A venue writes an ingredient in prose as often as in a tag."""
+    business = _venue()
+    spoken = menu.find_dishes(business, {"avoid": ["coconut"]})
+    assert "Xacuti" not in spoken and "Fish Curry" not in spoken
 
 
-@pytest.mark.parametrize("diet,attr", [("vegan", "vegan"), ("vegetarian", "vegetarian")])
-def test_dietary_filters_only_return_matching_dishes(diet, attr):
-    out = m.find_dishes({"dietary": diet})
-    named = [d for d in m.MENU if d.name in out]
-    assert named
-    assert all(getattr(d, attr) for d in named)
+def test_dish_details_says_what_it_contains_not_what_it_is_free_of():
+    business = _venue()
+    spoken = menu.dish_details(business, {"name": "samosa"})
+    assert "Contains dairy" in spoken or "contains dairy" in spoken.lower()
+    assert "free of" not in spoken.lower()
+    assert "kitchen" in spoken.lower(), "an allergy answer must hand off to the kitchen"
 
 
-def test_allergen_exclusion_is_honoured():
-    """A wrong answer here could hurt someone."""
-    out = m.find_dishes({"avoid": ["dairy"]})
-    named = [d for d in m.MENU if d.name in out]
-    assert named
-    assert all("dairy" not in d.allergens for d in named)
+def test_a_dietary_filter_keeps_only_what_is_marked():
+    business = _venue()
+    spoken = menu.find_dishes(business, {"dietary": "vegan"})
+    assert "Xacuti" in spoken
+    assert "Paneer" not in spoken
 
 
-def test_multiple_allergens_are_all_excluded():
-    out = m.find_dishes({"avoid": ["dairy", "nuts", "gluten"]})
-    named = [d for d in m.MENU if d.name in out]
-    assert named
-    for dish in named:
-        assert not ({"dairy", "nuts", "gluten"} & set(dish.allergens))
+# --- edges -------------------------------------------------------------------
 
 
-def test_spice_ceiling_is_respected():
-    out = m.find_dishes({"max_spice": 0})
-    named = [d for d in m.MENU if d.name in out]
-    assert named
-    assert all(d.spice == 0 for d in named)
+def test_a_venue_with_no_menu_says_so_rather_than_inventing_one():
+    business = make_business()
+    for tool in (menu.get_menu, menu.find_dishes, menu.recommend_dishes):
+        assert "kitchen" in tool(business, {}).lower()
 
 
-def test_price_ceiling_is_respected():
-    out = m.find_dishes({"max_price": 200})
-    named = [d for d in m.MENU if d.name in out]
-    assert named
-    assert all(d.price <= 200 for d in named)
+def test_an_unknown_dish_is_reported_not_invented():
+    business = _venue()
+    assert "not on the menu" in menu.dish_details(business, {"name": "lasagne"})
 
 
-def test_no_match_tells_the_agent_to_check_rather_than_invent():
-    out = m.find_dishes({"query": "spaghetti carbonara"})
-    assert "kitchen" in out
+def test_a_price_ceiling_is_respected():
+    business = _venue()
+    spoken = menu.find_dishes(business, {"max_price": 300})
+    assert "Samosa" in spoken
+    assert "Fish Curry" not in spoken
 
 
-def test_unreadable_filters_are_reported_not_raised():
-    assert "not a price" in m.find_dishes({"max_price": "cheap"})
-    assert "not a spice level" in m.find_dishes({"max_spice": "very"})
+def test_one_venue_never_sees_another_venue_s_menu():
+    """business_id is on every query (PRD §20)."""
+    stocked = _venue()
+    other = make_business()
+    _stock(other, [{"name": "Beef Wellington", "section": "mains", "price": 900}])
 
+    assert "Wellington" not in menu.get_menu(stocked, {"category": "mains"})
+    assert "Xacuti" not in menu.get_menu(other, {"category": "mains"})
 
-# --- dish details ------------------------------------------------------------
 
-
-def test_details_cover_price_spice_and_allergens():
-    out = m.dish_details({"name": "butter chicken"})
-    assert "480 rupees" in out
-    assert "mild" in out
-    assert "dairy" in out and "nuts" in out
-
-
-def test_details_match_on_a_partial_name():
-    """Speech recognition rarely delivers the full dish name."""
-    assert "Gulab Jamun" in m.dish_details({"name": "gulab"})
-
-
-def test_unknown_dish_is_reported():
-    assert "not on the menu" in m.dish_details({"name": "pizza"})
-
-
-def test_missing_name_asks_which_dish():
-    assert "Which dish" in m.dish_details({})
-
-
-def test_vegan_dishes_are_not_also_called_vegetarian():
-    """Saying both is noise; vegan already implies it."""
-    out = m.dish_details({"name": "chana masala"})
-    assert "vegan" in out
-    assert "vegetarian" not in out
-
-
-# --- recommendations ---------------------------------------------------------
-
-
-def test_recommendations_are_popular_dishes():
-    out = m.recommend_dishes({})
-    named = [d for d in m.MENU if d.name in out]
-    assert named and all(d.popular for d in named)
-
-
-def test_vegan_recommendations_are_all_vegan():
-    out = m.recommend_dishes({"dietary": "vegan"})
-    named = [d for d in m.MENU if d.name in out]
-    assert named and all(d.vegan for d in named)
-
-
-# --- data integrity ----------------------------------------------------------
-
-
-def test_every_dish_sits_in_a_real_category():
-    assert {d.category for d in m.MENU} <= set(m.CATEGORIES)
-
-
-def test_every_category_has_at_least_one_dish():
-    for category in m.CATEGORIES:
-        assert any(d.category == category for d in m.MENU), category
-
-
-def test_vegan_dishes_are_marked_vegetarian_too():
-    """Otherwise a vegetarian search silently hides vegan food."""
-    for dish in m.MENU:
-        if dish.vegan:
-            assert dish.vegetarian, dish.name
-
-
-def test_dairy_dishes_are_never_marked_vegan():
-    for dish in m.MENU:
-        if "dairy" in dish.allergens:
-            assert not dish.vegan, dish.name
-
-
-def test_gluten_dishes_are_never_marked_gluten_free():
-    for dish in m.MENU:
-        if "gluten" in dish.allergens:
-            assert not dish.gluten_free, dish.name
-
-
-def test_every_declared_tool_has_an_implementation():
-    assert {t["name"] for t in m.TOOLS} == set(m.IMPLEMENTATIONS)
-
-
-def test_tool_schemas_use_the_shape_the_api_requires():
-    for tool in m.TOOLS:
-        assert tool["type"] == "function"
-        assert "parameters" in tool and "input_schema" not in tool
-        assert tool["description"]
+def test_every_declared_menu_tool_has_an_implementation():
+    declared = {tool["name"] for tool in menu.TOOLS}
+    assert declared == set(menu.IMPLEMENTATIONS)

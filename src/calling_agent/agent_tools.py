@@ -682,7 +682,7 @@ def run_tool_for(
     menu_implementation = menu.IMPLEMENTATIONS.get(name)
     if menu_implementation is not None:
         try:
-            return menu_implementation(args), False
+            return menu_implementation(business, args), False
         except Exception as exc:  # noqa: BLE001
             log.exception("menu tool %s failed", name)
             return f"Something went wrong looking that up: {exc}", True
