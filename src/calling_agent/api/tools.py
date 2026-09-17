@@ -62,7 +62,11 @@ def run_tool(
     """
     business = _business(x_business or args.pop("business", None))
 
-    if name not in agent_tools.IMPLEMENTATIONS:
+    # Checked against what this business DECLARES, not against one module's
+    # implementations: the menu tools live elsewhere, and a business with the
+    # menu switched off should not be able to call them either. The listing
+    # endpoint and this one must never disagree about what exists.
+    if name not in _declared_names(business):
         raise HTTPException(404, f"No tool named {name}.")
 
     spoken, is_error = agent_tools.run_tool_for(business, name, args)
@@ -72,6 +76,10 @@ def run_tool(
         "error": is_error,
         "data": getattr(spoken, "data", {}),
     }
+
+
+def _declared_names(business: Business) -> set[str]:
+    return {tool["name"] for tool in agent_tools.tool_declarations(business)}
 
 
 @router.get("/{name}/schema")

@@ -13,6 +13,7 @@ parsedatetime>=2.6
 dateparser>=1.2
 phonenumbers>=8.13
 langcodes[data]>=3.4
+babel>=2.16
 itsdangerous>=2.2
 twilio>=9.0
 httpx>=0.28

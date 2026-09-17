@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+from . import formatting
 from .businesses import Business
 from .db import fetch_all, readonly
 
@@ -88,12 +89,8 @@ def _load(business: Business, *, available_only: bool = True) -> list[Dish]:
 
 
 def _price(business: Business, dish: Dish) -> str:
-    """"420 rupees" -- a number and a currency NAME, because it is read aloud."""
-    if dish.price is None:
-        return ""
-    amount = dish.price.normalize()
-    whole = int(amount) if amount == amount.to_integral_value() else amount
-    return f"{whole} {business.config['locale']['currency_name']}"
+    """"420 Indian rupees" -- read aloud, so a name rather than a symbol."""
+    return formatting.spoken_money(business, dish.price)
 
 
 def _describe(business: Business, dishes: list[Dish]) -> str:

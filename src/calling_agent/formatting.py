@@ -11,6 +11,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
+from babel.numbers import UnknownCurrencyError, format_currency
+
 from .businesses import Business
 
 _ORDINAL_SUFFIX = {1: "st", 2: "nd", 3: "rd", 21: "st", 22: "nd", 23: "rd", 31: "st"}
@@ -85,3 +87,30 @@ def money(business: Business, amount: Decimal | float | int | None) -> str:
 
 def currency_name(business: Business) -> str:
     return business.config["locale"]["currency_name"]
+
+
+def spoken_money(business: Business, amount: Decimal | float | int | None) -> str:
+    """"420 Indian rupees" -- a number and a currency name, for reading aloud.
+
+    CLDR via babel, not a guess: plurals are irregular (yen, won, rand do not
+    take an -s) and a venue hears its own currency named wrongly on every call
+    if this is hand-rolled.
+
+    Trailing ".00" is stripped because nobody says "four hundred and twenty
+    point zero zero rupees".
+    """
+    if amount is None:
+        return ""
+
+    currency = business.config["locale"]["currency"]
+    try:
+        spoken = format_currency(Decimal(str(amount)), currency, locale="en", format_type="name")
+    except (UnknownCurrencyError, ValueError, ArithmeticError):
+        # An unknown currency code must not stop the agent quoting a price.
+        return f"{_plain(amount)} {currency_name(business)}"
+    return spoken.replace(".00 ", " ", 1)
+
+
+def _plain(amount: Decimal | float | int) -> str:
+    number = Decimal(str(amount)).normalize()
+    return str(int(number) if number == number.to_integral_value() else number)

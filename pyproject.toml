@@ -22,6 +22,8 @@ dependencies = [
     "dateparser>=1.2",
     "phonenumbers>=8.13",
     "langcodes[data]>=3.4",
+    # CLDR currency names: plurals are irregular (yen, won, rand take no -s).
+    "babel>=2.16",
     # Signed, short-lived tickets for the telephony media stream.
     "itsdangerous>=2.2",
     # Twilio webhook signature validation and REST calls.
