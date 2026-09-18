@@ -95,6 +95,12 @@ class Settings(BaseSettings):
     # ghosts. One minute, per PRD §7.
     sweep_interval_seconds: int = Field(default=60, alias="SWEEP_INTERVAL_SECONDS")
     run_jobs_in_process: bool = Field(default=True, alias="RUN_JOBS_IN_PROCESS")
+    # How long a claimed task may run before it is presumed dead and retried.
+    # Longer than any handler takes, shorter than anyone waits for a text.
+    task_lease_seconds: int = Field(default=300, alias="TASK_LEASE_SECONDS")
+    # Total tries per task, first included. A carrier blip should not be
+    # final; a task failing forever should not be retried forever.
+    task_max_attempts: int = Field(default=3, alias="TASK_MAX_ATTEMPTS")
 
     # --- Telephony ------------------------------------------------------
     twilio_account_sid: str = Field(default="", alias="TWILIO_ACCOUNT_SID")

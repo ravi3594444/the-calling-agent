@@ -111,12 +111,17 @@ def queue(
     booking_id: UUID | str | None = None,
     customer_id: UUID | str | None = None,
     channel: str = "sms",
+    dedupe_key: str | None = None,
 ) -> UUID | None:
     """Write one message, inside the caller's transaction. Never sends.
 
     Returns None when there is nothing to send -- no number, no body, or the
     venue turned this message off. A withheld caller id is ordinary, and a
     booking must not fail because we could not text about it.
+
+    `dedupe_key` makes the write idempotent: a second call with the same key
+    is a no-op and returns None. Retried work passes one. Anything meant to
+    repeat -- a confirmation the owner resent on purpose -- passes none.
     """
     to = (to or "").strip()
     if not to or not body.strip():
@@ -124,8 +129,10 @@ def queue(
     row = fetch_one(
         conn,
         "INSERT INTO messages (business_id, booking_id, customer_id, direction, channel,"
-        " to_address, body, status, kind) VALUES (:b, :bk, :c, 'outbound', :ch, :to, :body,"
-        " 'queued', :kind) RETURNING id",
+        " to_address, body, status, kind, dedupe_key)"
+        " VALUES (:b, :bk, :c, 'outbound', :ch, :to, :body, 'queued', :kind, :dedupe)"
+        " ON CONFLICT (business_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING"
+        " RETURNING id",
         b=str(business.id),
         bk=str(booking_id) if booking_id else None,
         c=str(customer_id) if customer_id else None,
@@ -133,6 +140,7 @@ def queue(
         to=to,
         body=body.strip(),
         kind=kind,
+        dedupe=dedupe_key,
     )
     return row.id if row else None
 
@@ -146,6 +154,7 @@ def queue_for_booking(
     alternative: datetime | None = None,
     manage_token: str | None = None,
     channel: str = "sms",
+    dedupe_key: str | None = None,
 ) -> UUID | None:
     """Queue the message this booking's config says belongs to this event."""
     messaging = business.config["messaging"]
@@ -171,6 +180,7 @@ def queue_for_booking(
         booking_id=booking.id,
         customer_id=getattr(booking, "customer_id", None),
         channel=channel,
+        dedupe_key=dedupe_key,
     )
 
 

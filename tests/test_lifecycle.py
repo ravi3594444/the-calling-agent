@@ -13,6 +13,7 @@ import pytest
 from calling_agent import availability, bookings, holds, notifications
 from calling_agent.db import readonly
 from tests.conftest import committed, future_slot, make_business
+from tests.conftest import test_phone_number as a_number
 
 
 def _confirmed(business, at, units=2, name="Ravi", phone="+919876543210"):
@@ -335,7 +336,10 @@ def test_the_sender_is_a_plug_not_a_hardcoded_provider():
     before = settings.sms_provider
     settings.sms_provider = "test-carrier"
     try:
-        assert notifications.send_queued() >= 1
+        # Drained rather than sent once: the table accumulates across the
+        # session, and send_queued takes a page at a time, so a single call
+        # quietly stopped covering this test's own message.
+        assert sum(iter(lambda: notifications.send_queued(), 0)) >= 1
     finally:
         settings.sms_provider = before
         notifications.PROVIDERS.pop("test-carrier", None)
@@ -374,3 +378,127 @@ def test_a_booking_is_listed_on_the_service_it_belongs_to_not_the_calendar_day()
     assert [b.start_time for b in listed] == [after_midnight], (
         "a late booking fell off the night it belongs to"
     )
+
+
+# --- the task queue survives a restart ---------------------------------------
+
+
+def _queue_task(business, reason="reminder", booking_id=None, status="queued", attempts=0):
+    from sqlalchemy import text
+
+    from calling_agent.db import transaction
+
+    with transaction() as conn:
+        row = conn.execute(
+            text(
+                "INSERT INTO outbound_tasks"
+                " (business_id, booking_id, reason, payload, scheduled_for, status, attempts,"
+                "  updated_at)"
+                " VALUES (:b, :bk, :r, '{}'::jsonb, now() - interval '1 minute', :s, :a,"
+                "         now() - interval '1 hour')"
+                " RETURNING id"
+            ),
+            {"b": str(business.id), "bk": str(booking_id) if booking_id else None,
+             "r": reason, "s": status, "a": attempts},
+        ).first()
+    return row[0]
+
+
+def _task_status(task_id):
+    from sqlalchemy import text
+
+    from calling_agent.db import readonly
+
+    with readonly() as conn:
+        return conn.execute(
+            text("SELECT status, attempts FROM outbound_tasks WHERE id = :i"),
+            {"i": str(task_id)},
+        ).first()
+
+
+def test_a_task_stranded_by_a_restart_is_picked_up_again(business):
+    """A deploy between claiming a task and running it used to lose it forever.
+
+    The claim commits, then the handler runs. Kill the process in between and
+    the row sits in 'running' with nobody running it -- and only 'queued' rows
+    were ever claimed. For overflow_timeout that means a waitlisted guest
+    waiting in silence, which is the one thing PRD §11 forbids.
+    """
+    from calling_agent import jobs
+
+    stranded = _queue_task(business, reason="digest", status="running", attempts=1)
+    jobs.run_due_tasks()
+    assert _task_status(stranded).status == "done"
+
+
+def test_a_failed_task_is_retried_until_its_attempts_run_out(business, monkeypatch):
+    from calling_agent import jobs
+    from calling_agent.config import settings
+
+    monkeypatch.setattr(settings, "task_max_attempts", 3)
+    tries = []
+
+    @jobs.handles("flaky_test_task")
+    def _flaky(business, task):
+        tries.append(task["id"])
+        raise RuntimeError("carrier blip")
+
+    try:
+        task_id = _queue_task(business, reason="flaky_test_task")
+        for _ in range(5):
+            jobs.run_due_tasks()
+            _age_task(task_id)
+
+        assert len(tries) == 3, "tried three times, then stopped"
+        assert _task_status(task_id).status == "abandoned"
+    finally:
+        jobs.HANDLERS.pop("flaky_test_task", None)
+
+
+def _age_task(task_id):
+    """Push updated_at back so the next pass sees the lease as expired."""
+    from sqlalchemy import text
+
+    from calling_agent.db import transaction
+
+    with transaction() as conn:
+        conn.execute(
+            text("UPDATE outbound_tasks SET updated_at = now() - interval '1 hour'"
+                 " WHERE id = :i"),
+            {"i": str(task_id)},
+        )
+
+
+def test_a_task_with_no_handler_is_not_retried_forever(business):
+    from calling_agent import jobs
+
+    task_id = _queue_task(business, reason="nonexistent_reason")
+    jobs.run_due_tasks()
+    assert _task_status(task_id).status == "abandoned"
+
+
+def test_a_retried_reminder_does_not_text_the_guest_twice(business):
+    """Why retrying was never safe to add until messages deduped."""
+    from sqlalchemy import text
+
+    from calling_agent import jobs, notifications
+    from calling_agent.db import readonly, transaction
+
+    at = future_slot(business)
+    held = holds.take(business.id, at, 2)
+    booking = holds.confirm(business.id, held.hold_id, name="Ravi",
+                            phone=a_number())
+
+    task = {"id": _queue_task(business, booking_id=booking.id), "booking_id": booking.id}
+    for _ in range(3):
+        with transaction() as conn:
+            notifications.queue_for_booking(
+                conn, business, booking, "reminder", dedupe_key=jobs.message_key(task)
+            )
+
+    with readonly() as conn:
+        sent = conn.execute(
+            text("SELECT count(*) FROM messages WHERE booking_id = :b AND kind = 'reminder'"),
+            {"b": str(booking.id)},
+        ).scalar_one()
+    assert sent == 1, "three runs of one task is still one text"

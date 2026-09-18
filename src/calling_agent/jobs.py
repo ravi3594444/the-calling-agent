@@ -82,17 +82,41 @@ async def run_forever(interval_seconds: int | None = None) -> None:
 
 
 def run_due_tasks(limit: int = 100) -> int:
-    """Claim and run whatever is due. Claimed with SKIP LOCKED, so workers share."""
+    """Claim and run whatever is due. Claimed with SKIP LOCKED, so workers share.
+
+    THREE KINDS OF DUE, NOT ONE
+    A task is claimed, its claim commits, and only then does it run -- so a
+    process that dies in between leaves the row 'running' with nobody running
+    it. Claiming only 'queued' rows stranded those forever, and the one that
+    hurts is overflow_timeout: its whole job is to stop a waitlisted guest
+    waiting in silence, which is exactly what it then did.
+
+    So a claim also takes back a 'running' row older than the lease, and
+    retries a 'failed' one until attempts run out. Retrying is only safe
+    because the handlers dedupe their messages on the task id -- without that
+    this would text somebody twice, which is why it was never added.
+    """
     done = 0
     with transaction() as conn:
         rows = fetch_all(
             conn,
             "SELECT id, business_id, booking_id, reason, payload, attempts FROM outbound_tasks"
-            " WHERE status = 'queued' AND scheduled_for <= now()"
+            " WHERE ("
+            "   (status = 'queued' AND scheduled_for <= now())"
+            "   OR (status = 'running'"
+            "       AND updated_at < now() - make_interval(secs => :lease))"
+            "   OR (status = 'failed' AND attempts < :max_attempts"
+            "       AND updated_at < now() - make_interval(secs => :lease))"
+            " )"
             " ORDER BY scheduled_for LIMIT :limit FOR UPDATE SKIP LOCKED",
             limit=limit,
+            lease=settings.task_lease_seconds,
+            max_attempts=settings.task_max_attempts,
         )
-        claimed = [dict(r._mapping) for r in rows]
+        # The rows were read before the UPDATE below raises `attempts`, so the
+        # dicts would carry the previous count and a handler deciding whether
+        # it has tries left would be one behind.
+        claimed = [{**dict(r._mapping), "attempts": int(r.attempts or 0) + 1} for r in rows]
         if claimed:
             conn.execute(
                 text(
@@ -111,17 +135,32 @@ def run_due_tasks(limit: int = 100) -> int:
 def _run_one(task: dict[str, Any]) -> None:
     handler = HANDLERS.get(task["reason"])
     if handler is None:
-        _finish(task["id"], "failed", f"no handler for {task['reason']}")
+        # Not retryable: another attempt calls the same missing handler.
+        _finish(task["id"], "abandoned", f"no handler for {task['reason']}")
         return
 
     try:
         business = businesses.by_id(task["business_id"])
         handler(business, task)
     except Exception as exc:  # noqa: BLE001 - one bad task must not stop the queue
-        log.exception("task %s (%s) failed", task["id"], task["reason"])
-        _finish(task["id"], "failed", str(exc)[:500])
+        attempts = int(task.get("attempts") or 0)
+        spent = attempts >= settings.task_max_attempts
+        log.exception(
+            "task %s (%s) failed on attempt %d%s",
+            task["id"], task["reason"], attempts, "" if spent else "; will retry",
+        )
+        _finish(task["id"], "abandoned" if spent else "failed", str(exc)[:500])
         return
     _finish(task["id"], "done", None)
+
+
+def message_key(task: dict[str, Any], purpose: str = "") -> str:
+    """The dedupe key for a message this task sends.
+
+    Keyed on the TASK rather than the booking, so a retry cannot send a second
+    text while a deliberate resend of the same booking still can.
+    """
+    return f"task:{task['id']}{':' + purpose if purpose else ''}"
 
 
 def _finish(task_id, status: str, error: str | None) -> None:
@@ -145,7 +184,9 @@ def send_reminder(business: Business, task: dict[str, Any]) -> None:
     if booking.status not in (bookings.CONFIRMED, bookings.ARRIVED):
         return
     with transaction() as conn:
-        notifications.queue_for_booking(conn, business, booking, "reminder")
+        notifications.queue_for_booking(
+            conn, business, booking, "reminder", dedupe_key=message_key(task)
+        )
 
 
 @handles("overflow_timeout")
