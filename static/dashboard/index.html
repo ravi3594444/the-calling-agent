@@ -482,18 +482,6 @@ dialog.sheet .sheet-err.on{display:block}
     <div class="save"><span class="note" id="calNote"></span></div>
   </section>
 
-  <dialog class="sheet" id="sheet" aria-labelledby="sheetTitle">
-  <form method="dialog" id="sheetForm">
-    <div class="card-h"><div><h2 id="sheetTitle">.</h2><p id="sheetNote"></p></div></div>
-    <div class="card-b"><div class="grid" id="sheetBody"></div>
-      <div class="sheet-err" id="sheetErr" role="alert"></div></div>
-    <div class="sheet-acts">
-      <button class="btn" type="button" id="sheetCancel">Cancel</button>
-      <button class="btn key" type="submit" id="sheetOk">Save</button>
-    </div>
-  </form>
-</dialog>
-
 <section class="card" id="dayCard">
     <div class="card-h">
       <div><h2 id="dayHead">Thursday 16 October</h2><p id="daySub">Tap a day above to see it.</p></div>
@@ -815,5 +803,20 @@ dialog.sheet .sheet-err.on{display:block}
 </div>
 
 <script src="/static/dashboard/app.js"></script>
+<!-- The sheet lives here, outside every view. A <dialog> inside a hidden
+     section opens into the top layer, makes the page inert, and paints
+     nothing: a frozen page and a button that "does nothing", at once. -->
+<dialog class="sheet" id="sheet" aria-labelledby="sheetTitle">
+  <form method="dialog" id="sheetForm">
+    <div class="card-h"><div><h2 id="sheetTitle">.</h2><p id="sheetNote"></p></div></div>
+    <div class="card-b"><div class="grid" id="sheetBody"></div>
+      <div class="sheet-err" id="sheetErr" role="alert"></div></div>
+    <div class="sheet-acts">
+      <button class="btn" type="button" id="sheetCancel">Cancel</button>
+      <button class="btn key" type="submit" id="sheetOk">Save</button>
+    </div>
+  </form>
+</dialog>
+
 </body>
 </html>
