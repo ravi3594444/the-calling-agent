@@ -1084,8 +1084,11 @@ function updateWindowPreview(){
 function fillTemplateHelp(){
   const help=document.getElementById("fieldHelp");
   if(!help) return;
-  help.textContent="You can use: {display_name} {name} {party_size} {date_long} {time} "+
-    "{reference} {manage_url} {alternative} {unit_label} {currency_symbol}";
+  help.innerHTML="Fields you can use: <code>{display_name} {name} {party_size} "+
+    "{date_long} {time} {reference} {manage_url} {alternative} {unit_label} "+
+    "{currency_symbol}</code><br>Wrap a phrase in <code>[[double brackets]]</code> "+
+    "and it is left out entirely when the value inside is empty — so a booking "+
+    "with no alternative to offer doesn't send a sentence that trails off.";
 }
 
 /* The header and the footer under the bookings list are the two places the

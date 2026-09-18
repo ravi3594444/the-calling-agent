@@ -28,6 +28,10 @@ dependencies = [
     "itsdangerous>=2.2",
     # Twilio webhook signature validation and REST calls.
     "twilio>=9.0",
+    # Twilio posts webhooks as form data, and the guest's cancel button is a
+    # form POST. Without this FastAPI raises at request time, not at import,
+    # so the failure lands on the first real phone call.
+    "python-multipart>=0.0.9",
     "httpx>=0.28",
 ]
 

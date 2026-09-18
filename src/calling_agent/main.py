@@ -105,11 +105,17 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="tableline", version="1.0.0", lifespan=lifespan)
 _mount_static(app, STATIC_DIR)
 
-from .api import dashboard_router, telephony_router, tools_router  # noqa: E402
+from .api import (  # noqa: E402
+    dashboard_router,
+    manage_router,
+    telephony_router,
+    tools_router,
+)
 
 app.include_router(dashboard_router)
 app.include_router(tools_router)
 app.include_router(telephony_router)
+app.include_router(manage_router)
 
 
 def _build_agent(params: Mapping[str, str] | None = None) -> AgentDefinition | None:

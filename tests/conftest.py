@@ -10,7 +10,9 @@ and each test gets its own tenant, so tests never see each other's slots.
 
 from __future__ import annotations
 
+import itertools
 import os
+import secrets
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
 
@@ -89,6 +91,20 @@ def clean_caches():
     businesses.invalidate()
     yield
     businesses.invalidate()
+
+
+#: A dialled number is UNIQUE across every tenant -- that constraint is what
+#: stops two venues sharing a line -- so tests cannot hardcode one. Nor can
+#: they use a plain counter: the test database outlives the process, so run
+#: two would collide with run one. A per-run random block plus a counter is
+#: unique both within a run and across them.
+_run_block = secrets.randbelow(10_000)
+_next_number = itertools.count(1)
+
+
+def test_phone_number() -> str:
+    """An E.164 number no other test in this database has used."""
+    return f"+9199{_run_block:04d}{next(_next_number):04d}"
 
 
 def make_business(**overrides):
@@ -176,4 +192,11 @@ def committed(business_id, slot_start) -> int:
     return row[0] if row else 0
 
 
-__all__ = ["make_business", "future_slot", "committed", "date", "TEST_DATABASE_URL"]
+__all__ = [
+    "make_business",
+    "future_slot",
+    "committed",
+    "test_phone_number",
+    "date",
+    "TEST_DATABASE_URL",
+]

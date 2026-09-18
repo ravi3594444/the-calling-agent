@@ -101,16 +101,15 @@ DEFAULTS: dict[str, Any] = {
         "templates": {
             "confirmed": (
                 "{display_name}: booked for {party_size} on {date_long} at {time}. "
-                "Reference {reference}. Manage it here: {manage_url} "
-                "Reply C to cancel."
+                "Reference {reference}.[[ Manage it here: {manage_url}]]"
             ),
             "declined": (
-                "{display_name}: sorry, {time} on {date_long} is full. "
-                "The nearest we have is {alternative}. Reply Y to take it."
+                "{display_name}: sorry, {time} on {date_long} is full."
+                "[[ The nearest we have is {alternative} — call us to take it.]]"
             ),
             "reminder": (
-                "{display_name}: see you {date_long} at {time}, {party_size} people. "
-                "Reply C if your plans changed."
+                "{display_name}: see you {date_long} at {time}, {party_size} people."
+                "[[ Need to change it? {manage_url}]]"
             ),
             "cancelled": (
                 "{display_name}: your booking {reference} on {date_long} at {time} "
@@ -428,15 +427,34 @@ TEMPLATE_FIELDS = frozenset(
 )
 
 
-def render_template(body: str, values: dict[str, Any]) -> str:
-    """Fill a template, leaving an unknown field visible rather than raising.
+#: A segment in [[double brackets]] is dropped whole when any field inside it
+#: is empty. Without it a template that mentions a value which is sometimes
+#: absent leaves its label dangling: "Manage it here: Reply C to cancel."
+OPTIONAL_SEGMENT = re.compile(r"\[\[(.*?)\]\]", re.S)
 
-    Validation already refused unknown fields at save; this guards the case
-    where a value is simply absent for one booking (no alternative to offer,
-    no manage link because the venue disabled them). An empty string is the
-    right answer there -- a KeyError would drop the message entirely.
+
+def render_template(body: str, values: dict[str, Any]) -> str:
+    """Fill a template, dropping optional segments whose values are missing.
+
+    Validation already refused unknown fields at save; this handles the case
+    where a value is simply absent for one booking -- no alternative to offer,
+    no manage link because the venue has no public URL yet. An empty string is
+    the right answer for the field, and [[...]] is how a template says "and if
+    it is empty, say nothing at all".
     """
     safe = {field: "" for field in TEMPLATE_FIELDS}
     safe.update({k: ("" if v is None else str(v)) for k, v in values.items()})
-    out = re.sub(r"{(\w+)}", lambda m: safe.get(m.group(1), m.group(0)), body)
+
+    def fill(text: str) -> str:
+        return re.sub(r"{(\w+)}", lambda m: safe.get(m.group(1), m.group(0)), text)
+
+    def segment(match: re.Match[str]) -> str:
+        inner = match.group(1)
+        named = re.findall(r"{(\w+)}", inner)
+        if any(not safe.get(field, "") for field in named):
+            return ""
+        return fill(inner)
+
+    out = OPTIONAL_SEGMENT.sub(segment, body)
+    out = fill(out)
     return re.sub(r"\s{2,}", " ", out).strip()

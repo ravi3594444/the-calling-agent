@@ -16,4 +16,5 @@ langcodes[data]>=3.4
 babel>=2.16
 itsdangerous>=2.2
 twilio>=9.0
+python-multipart>=0.0.9
 httpx>=0.28
