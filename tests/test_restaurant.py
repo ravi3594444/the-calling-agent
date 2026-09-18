@@ -378,3 +378,36 @@ def test_a_crashed_tool_never_reports_the_exception_text(business, monkeypatch):
     assert is_error
     assert "10.1.2.3" not in spoken and "password" not in spoken
     assert "do not invent" in spoken.lower()
+
+
+def test_hold_is_presented_as_the_path_for_a_named_time(business):
+    """Checking and then holding is a race, and the agent was doing it.
+
+    A live call made three check_availability calls and never held anything.
+    The prompt said "the moment the caller names a time, call hold" and also
+    "check availability before you promise anything", and the tool's own
+    description said "never promise a time without calling this" -- so the
+    model checked, considered the matter handled, and moved on.
+
+    hold already checks and returns alternatives, so the two-step version buys
+    nothing and opens a window where somebody else takes the table in between.
+    """
+    tools = {t["name"]: t["description"] for t in agent_tools.tool_declarations(business)}
+
+    assert "reserves NOTHING" in tools["check_availability"]
+    assert "hold instead" in tools["check_availability"]
+    assert "checks availability itself" in tools["hold"]
+
+
+def test_the_prompt_forbids_claiming_an_unchecked_result(business):
+    """Observed live: "Ah, I see, my mistake. Yes, three PM is still ahead of
+    us" -- with no tool call behind it. Inventing a booking is the worst thing
+    this product can do."""
+    from calling_agent.agent_config import build_prompt_for
+
+    # Normalised, because the prompt is wrapped prose and a rule that matters
+    # should not stop being asserted because a sentence moved across a line.
+    prompt = " ".join(build_prompt_for(business).split()).lower()
+    assert "unless a tool has just told you so" in prompt
+    assert "do not call check_availability first" in prompt
+    assert "a booking you invented" in prompt

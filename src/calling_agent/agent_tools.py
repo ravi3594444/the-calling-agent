@@ -630,15 +630,20 @@ def tool_declarations(business: Business) -> list[dict[str, Any]]:
         ),
         _tool(
             "check_availability",
-            f"Check whether a {booking_noun} is free. If it is full this suggests "
-            "nearby times. Never promise a time without calling this.",
+            "Answer an OPEN question about what is free -- 'are you busy on "
+            "Saturday?', 'what have you got around eight?'. This reserves "
+            "NOTHING. If the caller has named a time they actually want, use "
+            "hold instead: it checks and claims in one step.",
             {"date": _DATE, "time": _TIME, "units": units_field},
             required=["date", "time", "units"],
         ),
         _tool(
             "hold",
-            "Claim the capacity for a few minutes. Call this the MOMENT the caller "
-            "states a time, BEFORE asking for their name or number.",
+            f"Claim a {booking_noun} for a few minutes. Call this the MOMENT the "
+            "caller names a time they want, BEFORE asking for their name or "
+            "number. It checks availability itself and returns alternatives if "
+            "the time is full, so calling check_availability first is a wasted "
+            "step -- and the time can be taken by someone else in between.",
             {"date": _DATE, "time": _TIME, "units": units_field},
             required=["date", "time", "units"],
         ),
