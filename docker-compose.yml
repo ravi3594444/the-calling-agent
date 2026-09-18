@@ -29,6 +29,9 @@ services:
         condition: service_healthy
     environment:
       PORT: 8080
+      # The image installs the package into site-packages and copies static/
+      # beside the WORKDIR, so neither path relative to __file__ finds it.
+      STATIC_DIR: /app/static
       DATABASE_URL: >-
         postgresql+psycopg://${POSTGRES_USER:-tableline}:${POSTGRES_PASSWORD:-tableline}@db:5432/${POSTGRES_DB:-tableline}
       MIGRATE_ON_START: "true"

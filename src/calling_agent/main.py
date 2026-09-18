@@ -22,7 +22,7 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Response, WebSocket
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -42,18 +42,28 @@ log = logging.getLogger("calling_agent")
 
 
 def _static_dir() -> Path:
-    """Where the browser clients live, from a checkout OR an installed wheel.
+    """Where the browser clients live, from a checkout, a wheel, or a container.
 
-    STATIC_DIR names the directory explicitly, which is what a container that
-    pip-installs from git needs.
+    Four candidates, most explicit first. The WORKING DIRECTORY one is what a
+    container needs: the image pip-installs the package into site-packages and
+    copies `static/` next to the WORKDIR, so neither path relative to
+    `__file__` exists. Without it `/` served a FileResponse for a file that was
+    not there, which is a 500 with nothing useful in it -- the failure this
+    function's docstring had warned about since before it could happen.
     """
-    override = os.getenv("STATIC_DIR", "").strip()
-    if override:
-        return Path(override)
-    repo = Path(__file__).resolve().parents[2] / "static"
-    if repo.is_dir():
-        return repo
-    return Path(__file__).resolve().parent / "static"
+    candidates = [
+        Path(os.getenv("STATIC_DIR", "").strip() or "/nonexistent"),
+        # A checkout or an editable install: src/calling_agent/main.py -> repo.
+        Path(__file__).resolve().parents[2] / "static",
+        # A container: the image copies static/ beside the working directory.
+        Path.cwd() / "static",
+        # A wheel that ships it inside the package.
+        Path(__file__).resolve().parent / "static",
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return candidates[1]
 
 
 STATIC_DIR = _static_dir()
@@ -198,12 +208,29 @@ async def diagnose() -> dict:
 
 
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+async def index() -> Response:
+    """The browser client.
+
+    A missing file answers with what is wrong and where it looked, rather than
+    a 500: the API, the dashboard and every phone this relay carries work
+    perfectly well without it, so it must be obvious that only the page is
+    missing.
+    """
+    page = STATIC_DIR / "index.html"
+    if not page.is_file():
+        return JSONResponse(
+            {
+                "error": "the browser client is not installed",
+                "looked_in": str(STATIC_DIR),
+                "fix": "set STATIC_DIR to the directory containing index.html",
+            },
+            status_code=503,
+        )
+    return FileResponse(page)
 
 
 @app.get("/dashboard")
-async def dashboard_page() -> FileResponse:
+async def dashboard_page() -> Response:
     """The staff dashboard. Opened from a long secret link, saved to a home screen."""
     page = STATIC_DIR / "dashboard" / "index.html"
     if not page.is_file():
@@ -216,8 +243,11 @@ async def dashboard_page() -> FileResponse:
 # load logs two 404s.
 @app.get("/favicon.ico")
 @app.get("/favicon.png")
-async def favicon() -> FileResponse:
-    return FileResponse(STATIC_DIR / "favicon.svg", media_type="image/svg+xml")
+async def favicon() -> Response:
+    icon = STATIC_DIR / "favicon.svg"
+    if not icon.is_file():
+        return Response(status_code=204)
+    return FileResponse(icon, media_type="image/svg+xml")
 
 
 @app.websocket("/ws")
