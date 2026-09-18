@@ -13,7 +13,12 @@ const text = (id, value) => {
 const passthrough = Object.fromEntries(
   [...new URLSearchParams(location.search)].filter(([key]) => key !== 'voice'),
 );
-const live = new CallSession({ emit: handle, passthrough });
+// ?encoding=pcmu runs the call at 8 kHz mu-law -- telephone band and telephone
+// codec -- so turn-taking and barge-in can be judged on what a caller will
+// actually hear rather than on browser-quality audio. It is forwarded to /ws
+// by passthrough, so the two ends cannot disagree about the format.
+const encoding = new URLSearchParams(location.search).get('encoding') || 'pcm';
+const live = new CallSession({ emit: handle, passthrough, encoding });
 const demo = new DemoSession(handle);
 let mode = 'live';
 // False until the person actually chooses a voice (or chose one before, and it

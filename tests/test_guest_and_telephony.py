@@ -200,3 +200,45 @@ def test_the_dialled_number_picks_the_tenant(monkeypatch):
         business_id, _ = read_stream_ticket(ticket)
         assert business_id == str(venue.id), "the call was routed to the wrong venue"
         assert businesses.by_id(business_id).name == venue.name
+
+
+# --- telephone mode in the browser -------------------------------------------
+
+
+def test_the_browser_can_run_at_telephone_fidelity():
+    """PRD §16 gates the provider choice on how barge-in feels ON A PHONE.
+
+    Judging that on 24 kHz browser audio answers a question nobody asked, so
+    the browser transport can be asked for 8 kHz mu-law -- the same bytes a
+    call carries.
+    """
+    from calling_agent import protocol
+    from calling_agent.transport import BrowserTransport
+
+    phone = BrowserTransport(ws=None, encoding="pcmu")
+    assert phone.encoding == protocol.ENCODING_PCMU
+    assert phone.sample_rate == 8000
+
+    browser = BrowserTransport(ws=None)
+    assert browser.encoding == protocol.ENCODING_PCM
+    assert browser.sample_rate == 24000
+
+
+def test_an_unknown_encoding_costs_fidelity_not_the_call():
+    from calling_agent import protocol
+    from calling_agent.transport import BrowserTransport
+
+    assert BrowserTransport(ws=None, encoding="wav").encoding == protocol.ENCODING_PCM
+
+
+def test_the_session_payload_pins_input_and_output_to_the_same_encoding(business):
+    """Mismatched formats mean the agent talks and the caller hears nothing."""
+    from calling_agent import agent_tools, protocol
+    from calling_agent.agent_config import build_session_update
+
+    payload = build_session_update(
+        protocol.ENCODING_PCMU, agent=agent_tools.build_agent(business)
+    )["session"]
+
+    assert payload["input"]["format"]["encoding"] == protocol.ENCODING_PCMU
+    assert payload["output"]["format"]["encoding"] == protocol.ENCODING_PCMU

@@ -1,6 +1,25 @@
+import * as mulaw from './mulaw.js';
+
 export const SAMPLE_RATE = 24000;
+// Telephony is 8 kHz mu-law. Running the browser at the same rate is the only
+// way to hear what a caller will actually hear -- band, codec and all.
+export const PHONE_SAMPLE_RATE = 8000;
 export const PLAYBACK_CUSHION = 0.02;
 const MAX_PLAYBACK_SECONDS = 15;
+
+/** How each encoding turns frames into wire bytes and back. */
+const CODECS = {
+  pcm: {
+    rate: SAMPLE_RATE,
+    encode: (pcm) => pcmToBase64(pcm),
+    decode: (value) => base64ToPCM(value),
+  },
+  pcmu: {
+    rate: PHONE_SAMPLE_RATE,
+    encode: (pcm) => mulaw.toBase64(mulaw.encode(pcm)),
+    decode: (value) => mulaw.decode(mulaw.fromBase64(value)),
+  },
+};
 
 export function pcmToBase64(pcm) {
   const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);
@@ -31,10 +50,14 @@ function abortError() {
 }
 
 export class CallAudio {
-  constructor({ onFrame, onPlayback, onError }) {
+  constructor({ onFrame, onPlayback, onError, encoding = 'pcm' }) {
     this.onFrame = onFrame;
     this.onPlayback = onPlayback;
     this.onError = onError;
+    // Unknown encodings fall back to pcm rather than throwing: a typo in a URL
+    // should cost fidelity, never the call.
+    this.codec = CODECS[encoding] || CODECS.pcm;
+    this.encoding = CODECS[encoding] ? encoding : 'pcm';
     this.sources = new Set();
     this.nextPlayAt = 0;
     this.closed = false;
@@ -52,6 +75,8 @@ export class CallAudio {
     if (!AudioContextClass) throw new Error('This browser does not support live audio.');
     // Create and resume in the click task, before awaiting a permission prompt.
     try {
+      // Asked for at the browser rate even in telephone mode: 8 kHz contexts
+      // are refused by some browsers, and the worklet downsamples anyway.
       this.ctx = new AudioContextClass({ sampleRate: SAMPLE_RATE, latencyHint: 'interactive' });
     } catch {
       this.ctx = new AudioContextClass({ latencyHint: 'interactive' });
@@ -96,7 +121,7 @@ export class CallAudio {
       this.input = ctx.createMediaStreamSource(this.stream);
       this.capture = new AudioWorkletNode(ctx, 'pcm-capture', {
         numberOfOutputs: 0,
-        processorOptions: { inputRate: ctx.sampleRate },
+        processorOptions: { inputRate: ctx.sampleRate, targetRate: this.codec.rate },
       });
       this.inputAnalyser = ctx.createAnalyser();
       this.outputAnalyser = ctx.createAnalyser();
@@ -107,7 +132,7 @@ export class CallAudio {
       this.input.connect(this.inputAnalyser);
       this.input.connect(this.capture);
       this.capture.port.onmessage = (event) => {
-        if (!this.closed) this.onFrame(pcmToBase64(event.data));
+        if (!this.closed) this.onFrame(this.codec.encode(event.data));
       };
       this.stream.getAudioTracks().forEach((track) => {
         track.onended = () => {
@@ -125,7 +150,7 @@ export class CallAudio {
 
   play(value) {
     if (this.closed || !this.ctx || !this.gain) return null;
-    const pcm = base64ToPCM(value);
+    const pcm = this.codec.decode(value);
     if (!pcm.length) return null;
     const ctx = this.ctx;
     if (ctx.state !== 'running') {
@@ -134,7 +159,10 @@ export class CallAudio {
     if (this.nextPlayAt - ctx.currentTime > MAX_PLAYBACK_SECONDS) {
       throw new Error('Audio has fallen behind. Please start a new conversation.');
     }
-    const buffer = ctx.createBuffer(1, pcm.length, SAMPLE_RATE);
+    // Built at the CODEC's rate, not the context's. Web Audio resamples on
+    // playback, so an 8 kHz buffer keeps its narrowband character instead of
+    // being reinterpreted as 24 kHz and played back three times too fast.
+    const buffer = ctx.createBuffer(1, pcm.length, this.codec.rate);
     const channel = buffer.getChannelData(0);
     for (let i = 0; i < pcm.length; i++) channel[i] = pcm[i] / 32768;
     const source = ctx.createBufferSource();

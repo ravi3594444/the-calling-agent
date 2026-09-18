@@ -226,6 +226,7 @@ async def ws(
     resume: str | None = None,
     voice: str | None = None,
     business: str | None = None,
+    encoding: str = "pcm",
 ) -> None:
     """Bridge one browser to one agent session.
 
@@ -238,6 +239,10 @@ async def ws(
 
     `business` names the tenant. A browser has no dialled number, so it says
     which venue it is calling; without one, DEFAULT_BUSINESS_SLUG decides.
+
+    `encoding=pcmu` runs the call at 8 kHz mu-law -- telephone band, telephone
+    codec -- so the browser client can be used to judge how the agent will
+    sound on a real line before there is a real line.
     """
     await websocket.accept()
     client = websocket.client.host if websocket.client else "unknown"
@@ -248,7 +253,7 @@ async def ws(
         agent = await asyncio.to_thread(_agent_for_slug, business)
 
     await AgentSession(
-        BrowserTransport(websocket),
+        BrowserTransport(websocket, encoding=encoding),
         resume_session_id=resume,
         voice=voice,
         agent=agent,
