@@ -55,3 +55,21 @@ test('a sheet field is labelled by its own label element', () => {
   assert.match(appSource, /<label for="\$\{id\}">/, 'field() writes a label pointing at the input');
   assert.match(appSource, /<input id="\$\{id\}"/, 'and an input with that id');
 });
+
+test('the device bar and the unseen marker exist, and the marker is not gold', () => {
+  // §14: sound and wake lock are per device, so they sit beside the theme
+  // switch; the unseen dot must never borrow the decision colour.
+  assert.ok(document.getElementById('soundBtn'), 'a sound toggle');
+  assert.ok(document.getElementById('wakeBtn'), 'a wake lock toggle');
+  const css = document.querySelector('style').textContent;
+  assert.match(css, /tr\.b\.unseen td:first-child::before/, 'an unseen marker rule');
+  const rule = css.slice(css.indexOf('tr.b.unseen td:first-child::before'));
+  assert.doesNotMatch(rule.slice(0, 200), /--accent|gold/, 'the marker is not the decision colour');
+});
+
+test('bookings are noticed, rows can be marked seen, and audio waits for a tap', () => {
+  assert.match(appSource, /noticeBookings\(data\)/, 'each fresh list is noticed');
+  assert.match(appSource, /markSeen\(data\[i\]\?\.id\)/, 'opening a row marks it seen');
+  assert.match(appSource, /addEventListener\("pointerdown", unlockAudio/, 'audio unlocks on the first tap');
+  assert.doesNotMatch(appSource, /Notification\.requestPermission/, 'no permission prompt, ever');
+});

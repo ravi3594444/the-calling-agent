@@ -324,6 +324,14 @@ dialog.sheet .sheet-acts{display:flex;gap:10px;justify-content:flex-end;
   padding:14px 22px;border-top:1px solid var(--line)}
 dialog.sheet .sheet-err{color:var(--bad,#b4331f);font-size:14px;margin-top:12px;display:none}
 dialog.sheet .sheet-err.on{display:block}
+/* A booking this device has not opened yet. A plain dot in the ink colour,
+   never gold: gold means something needs a decision, and a new booking that
+   is already confirmed does not. */
+tr.b.unseen td:first-child{position:relative;padding-left:22px}
+tr.b.unseen td:first-child::before{content:"";position:absolute;left:8px;top:50%;
+  width:7px;height:7px;margin-top:-4px;border-radius:50%;background:var(--ink)}
+.device{margin-right:8px}
+.device button[aria-pressed="true"]{background:var(--ink);color:var(--card)}
 #menuReview{margin-top:16px}
 #menuReview .prop{display:grid;grid-template-columns:1fr 92px 120px auto;gap:8px;
   align-items:center;padding:8px 0;border-top:1px solid var(--line)}
@@ -385,6 +393,10 @@ dialog.sheet .sheet-err.on{display:block}
       <button data-v="settings">Settings</button>
     </nav>
     <div class="acct"><b id="acctName">&nbsp;</b><span id="acctSub">&nbsp;</span></div>
+    <div class="theme device" id="device" aria-label="This device">
+      <button id="soundBtn" aria-pressed="true" title="A tone when a booking lands, a second one when something needs you">Sound</button>
+      <button id="wakeBtn" aria-pressed="false" title="Stop the screen going dark on a tablet by the door" hidden>Keep screen on</button>
+    </div>
     <div class="theme" id="theme">
       <button data-t="light">Light</button>
       <button data-t="dark">Dark</button>

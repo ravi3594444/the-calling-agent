@@ -404,7 +404,9 @@ def test_venue_facts_reach_the_prompt_and_only_the_ones_that_are_set():
     rule -- offer to check -- covers the rest."""
     from calling_agent.agent_config import build_prompt_for, venue_block_for
 
-    business = make_business(config={"venue": {"parking": "Free on the street after 6", "children": ""}})
+    business = make_business(
+        config={"venue": {"parking": "Free on the street after 6", "children": ""}}
+    )
     block = venue_block_for(business)
     assert "Parking: Free on the street after 6" in block
     assert "Children" not in block, "a blank field must not be listed as anything"

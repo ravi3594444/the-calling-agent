@@ -219,7 +219,7 @@ function drawBookings(){
     }
     const i=data.indexOf(b);
     const [label,tone]=LABEL[b.status]||[b.status,""];
-    html+=`<tr class="b ${b.status==="arrived"?"past":""} ${b.status==="no_show"?"missed":""}" data-i="${i}">
+    html+=`<tr class="b ${b.status==="arrived"?"past":""} ${b.status==="no_show"?"missed":""} ${seenIds.has(b.id)?"":"unseen"}" data-i="${i}">
       <td>${esc(b.time)}</td>
       <td>${esc(b.name)}${b.meta?`<div class="meta">${esc(b.meta)}</div>`:""}</td>
       <td class="r">${b.party_size}</td>
@@ -330,6 +330,7 @@ async function loadBookings(){
   try{
     const payload=await api.bookings(dayKey);
     data=payload.bookings;
+    noticeBookings(data);
     window.__blocks=payload.blocks;
     openRows.clear();
     freshness();
@@ -356,7 +357,7 @@ document.getElementById("daytabs").addEventListener("click",e=>{
 document.getElementById("q").addEventListener("input",drawBookings);
 
 /* ---------------- waiting on you ---------------- */
-let pendingId=null;
+let pendingId=null, pendingSeenOnce=false;
 let chan="text";
 
 async function loadPending(){
@@ -364,12 +365,15 @@ async function loadPending(){
   try{
     const payload=await api.pending();
     if(!payload.pending){
+      pendingSeenOnce=true; pendingId=null;
       card.innerHTML=`<div class="card-h"><div><h2>Waiting on you</h2>
         <p>Nothing right now.</p></div></div>
         <div class="empty">Everything the agent took is already confirmed.</div>`;
       return;
     }
     const p=payload.pending;
+    if(pendingSeenOnce && pendingId!==p.id) tone("decision");
+    pendingSeenOnce=true;
     pendingId=p.id;
     chan=payload.defaults?.on_accept==="call"?"call":"text";
     document.getElementById("pT").textContent=p.time;
@@ -1447,6 +1451,7 @@ document.body.addEventListener("click",e=>{
     if(row.dataset.i!==undefined){
       const i=+row.dataset.i;
       openRows.has(i)?openRows.delete(i):openRows.add(i);
+      markSeen(data[i]?.id);
       drawBookings();
     } else if(row.dataset.call!==undefined){
       const detail=document.getElementById("call-"+row.dataset.call);
@@ -1754,5 +1759,114 @@ async function shrink(file){
     return file;                      // a photo we cannot shrink is still a photo
   }
 }
+
+/* ---------------- this device (PRD §14) ---------------- */
+/* Sound, the unseen marker and the wake lock are about THIS tablet, not the
+   venue, so they live in localStorage beside the theme rather than in the
+   config that every device shares. */
+
+const device = {
+  sound: (()=>{ try{ return localStorage.getItem("tl-sound")!=="off"; }catch(e){ return true; } })(),
+  wake:  (()=>{ try{ return localStorage.getItem("tl-wake")==="on"; }catch(e){ return false; } })(),
+};
+function saveDevice(){
+  try{
+    localStorage.setItem("tl-sound", device.sound?"on":"off");
+    localStorage.setItem("tl-wake",  device.wake ?"on":"off");
+  }catch(e){}
+}
+
+/* Web Audio needs a user gesture before it may make a sound. The first tap
+   anywhere on the page is that gesture -- so there is never a permission
+   prompt, and never a dialog asking to "enable notifications". */
+let audio=null;
+function unlockAudio(){
+  if(audio) return;
+  try{ audio=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ audio=null; }
+}
+document.addEventListener("pointerdown", unlockAudio, { once:true, passive:true });
+
+/* Two tones, generated rather than shipped as files: nothing to fetch, and
+   they cannot 404 on a bad connection. "arrival" is two rising notes; the
+   "decision" tone is three, so the difference is heard across a loud room. */
+function tone(kind){
+  if(!device.sound || !audio) return;
+  if(audio.state==="suspended") audio.resume().catch(()=>{});
+  const notes = kind==="decision" ? [660, 880, 1100] : [660, 880];
+  const start = audio.currentTime + 0.02;
+  notes.forEach((hz, i)=>{
+    const osc=audio.createOscillator(), gain=audio.createGain();
+    osc.type="sine"; osc.frequency.value=hz;
+    const at=start + i*0.14;
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.25, at+0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at+0.12);
+    osc.connect(gain).connect(audio.destination);
+    osc.start(at); osc.stop(at+0.13);
+  });
+}
+
+/* Which bookings this device has opened. Per business, so one tablet used
+   for two venues does not mark one venue's bookings seen because the other
+   was busy. Seeded with everything the first time it is ever opened: a
+   marker on every row on day one says nothing. */
+let seenIds=new Set(), knownIds=new Set(), seenKey=null, firstBookingsLoad=true;
+function loadSeen(){
+  seenKey=`tl-seen:${state.business?.id||"x"}`;
+  try{
+    const raw=localStorage.getItem(seenKey);
+    seenIds=new Set(raw ? JSON.parse(raw) : []);
+    return raw!==null;
+  }catch(e){ return false; }
+}
+function saveSeen(){
+  try{ localStorage.setItem(seenKey, JSON.stringify([...seenIds].slice(-2000))); }catch(e){}
+}
+function markSeen(id){
+  if(!id || seenIds.has(id)) return;
+  seenIds.add(id); saveSeen();
+}
+/* Called with each fresh list. Plays the arrival tone for ids not seen this
+   session -- but not on the first load, which is the page catching up. */
+function noticeBookings(list){
+  const fresh=list.filter(b=>!knownIds.has(b.id));
+  list.forEach(b=>knownIds.add(b.id));
+  if(firstBookingsLoad){
+    firstBookingsLoad=false;
+    if(!loadSeen()){ list.forEach(b=>seenIds.add(b.id)); saveSeen(); }
+    return;
+  }
+  if(fresh.length) tone("arrival");
+}
+
+/* The screen on a tablet by the door goes dark after a minute and the host
+   loses the list. Optional, per device, re-acquired when the tab comes back
+   because the lock is released whenever it is hidden. */
+let wakeLock=null;
+async function applyWake(){
+  if(!("wakeLock" in navigator)) return;
+  if(!device.wake){
+    try{ await wakeLock?.release(); }catch(e){}
+    wakeLock=null; return;
+  }
+  if(wakeLock && !wakeLock.released) return;
+  try{ wakeLock=await navigator.wakeLock.request("screen"); }catch(e){ wakeLock=null; }
+}
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) applyWake(); });
+
+(function wireDevice(){
+  const sound=document.getElementById("soundBtn"), wake=document.getElementById("wakeBtn");
+  if(!sound||!wake) return;
+  const paint=()=>{
+    sound.setAttribute("aria-pressed", String(device.sound));
+    sound.textContent = device.sound ? "Sound on" : "Sound off";
+    wake.setAttribute("aria-pressed", String(device.wake));
+    wake.textContent = device.wake ? "Screen stays on" : "Keep screen on";
+  };
+  if("wakeLock" in navigator) wake.hidden=false;
+  sound.addEventListener("click", ()=>{ device.sound=!device.sound; saveDevice(); paint(); if(device.sound) tone("arrival"); });
+  wake.addEventListener("click", ()=>{ device.wake=!device.wake; saveDevice(); paint(); applyWake(); });
+  paint(); applyWake();
+})();
 
 start();
