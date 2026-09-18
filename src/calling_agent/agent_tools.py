@@ -608,8 +608,10 @@ def _queue_confirmation(business: Business, booking: Booking) -> None:
 _DATE = {
     "type": "string",
     "description": (
-        "ISO-8601 date, YYYY-MM-DD (e.g. 2031-03-09). The four-digit year "
-        "comes from the now tool -- never guess it."
+        "ISO-8601 date, YYYY-MM-DD (e.g. 2031-03-09), using the date this "
+        "call connected for the year. A phrase the caller used -- 'today', "
+        "'tomorrow', 'next Friday' -- is also accepted and is resolved in the "
+        "venue's own timezone."
     ),
 }
 _TIME = {"type": "string", "description": "24-hour time, HH:MM (e.g. 19:30)."}

@@ -20,8 +20,10 @@ Two things deliberately did NOT survive the rewrite:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
+from . import formatting
 from .agent_spec import AgentDefinition
 from .businesses import Business
 from .config import settings
@@ -32,11 +34,12 @@ You are {agent_name}, and you answer the phone at {display_name}{description}.
 {vertical_fragment} You are {tone}, and you sound like a person who works
 there -- because as far as the caller is concerned, you do.
 
-You do not know what day it is until you ask, and that includes the year. Call
-now() at the start of any conversation about a date, and resolve_date for
-anything like "tomorrow", "this Friday" or "next weekend". Every date you send
-to a tool takes its year from now() -- a guessed year books into the past.
-Never ask a caller for a calendar date you could have worked out yourself.
+{today_line}Work out "tomorrow", "this Friday" and "next weekend" from that
+date yourself, or just pass the caller's own words to the date field and let
+the tool resolve them in the venue's timezone. Either is fine; both save a
+step. Call now() only when you need the exact time of day, or when this call
+has run long enough that midnight may have passed. Never ask a caller for a
+calendar date you could have worked out yourself.
 
 Tools answer in JSON. Read the fields and say what they mean in your own
 words; never read a field name, a raw date like 2031-03-09, or any part of the
@@ -155,6 +158,19 @@ def build_prompt_for(business: Business) -> str:
 
     Never cached because config is read fresh per call: an owner who widens
     their party limit at six should see it honoured at five past.
+
+    WHY THE DATE IS BACK IN THE PROMPT
+    It was taken out because a date baked in at IMPORT is wrong for every call
+    after the first midnight. That is true, and it is not what this is: this
+    runs per call, knows the venue's own timezone, and states the moment the
+    call connected rather than claiming to be a live clock.
+
+    What it buys is a whole round trip. Asking now() before every booking cost
+    a tool call, a wait for reply.done and a second inference -- several
+    seconds of silence down the phone, every time, to learn something that had
+    not changed since the caller said hello. now() is still there for the two
+    cases that genuinely need it: the exact time of day, and a call long
+    enough to cross midnight.
     """
     identity = business.config["identity"]
     agent = business.config["agent"]
@@ -172,7 +188,15 @@ def build_prompt_for(business: Business) -> str:
         f"- You speak {_join(languages)}.\n" if len(languages) > 1 else ""
     )
 
+    connected = formatting.local(business, datetime.now(UTC))
+    today_line = (
+        f"This call connected at {formatting.time_str(business, connected)} on "
+        f"{formatting.date_long(business, connected)}, {connected.date().isoformat()}. "
+        f"That is today where the venue is. "
+    )
+
     return PROMPT_TEMPLATE.format(
+        today_line=today_line,
         agent_name=identity["agent_name"] or "the host",
         display_name=identity["display_name"] or business.name,
         description=description,

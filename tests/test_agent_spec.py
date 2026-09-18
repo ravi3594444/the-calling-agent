@@ -373,3 +373,22 @@ def test_diagnose_reports_which_agent_it_built(monkeypatch):
     body = TestClient(app).get("/diagnose").json()
     paso = next(s for s in body["steps"] if s["step"] == "agent")
     assert "dairy" in paso["detail"]
+
+
+def test_the_prompt_carries_the_connect_date_so_no_round_trip_is_needed(business):
+    """The year has to be in the prompt, or the model asks a tool for it.
+
+    Asking now() before every booking cost a tool call, a wait for reply.done
+    and a second inference -- several seconds of phone silence to learn
+    something that had not changed since the caller said hello.
+    """
+    from datetime import UTC, datetime
+
+    from calling_agent import formatting
+    from calling_agent.agent_config import build_prompt_for
+
+    today = formatting.local(business, datetime.now(UTC)).date()
+    prompt = " ".join(build_prompt_for(business).split())
+
+    assert today.isoformat() in prompt, "the model still has to ask what year it is"
+    assert "now() only when" in prompt, "nothing stops it asking anyway"
