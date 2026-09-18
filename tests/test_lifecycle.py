@@ -6,7 +6,7 @@ move capacity correctly is invisible in the UI and catastrophic in the room.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -563,3 +563,131 @@ def test_the_nudge_switch_turns_nudges_off_but_not_the_digest(business):
 
     jobs.daily_digest(staffed, {"id": _queue_task(staffed, reason="digest")})
     assert len(_staff_texts(staffed, "digest")) == 1, "the other switch is still on"
+
+
+# --- the dialler -------------------------------------------------------------
+
+
+def _queue_voice(business, to="+919999900010", body="We are sorry, 8 PM is full."):
+    from sqlalchemy import text
+
+    from calling_agent.db import transaction
+
+    with transaction() as conn:
+        row = conn.execute(
+            text(
+                "INSERT INTO messages (business_id, direction, channel, to_address, body,"
+                " status, kind) VALUES (:b, 'outbound', 'voice', :to, :body, 'queued', 'declined')"
+                " RETURNING id"
+            ),
+            {"b": str(business.id), "to": to, "body": body},
+        ).first()
+    return row[0]
+
+
+def _message(message_id):
+    from sqlalchemy import text
+
+    from calling_agent.db import readonly
+
+    with readonly() as conn:
+        return conn.execute(
+            text("SELECT status, channel, provider_id, attempts, send_after FROM messages"
+                 " WHERE id = :i"),
+            {"i": str(message_id)},
+        ).first()
+
+
+def _hhmm(dt):
+    return dt.strftime("%H:%M")
+
+
+def _dialler_ready(monkeypatch):
+    from calling_agent.config import settings
+
+    monkeypatch.setattr(settings, "voice_provider", "log")
+    monkeypatch.setattr(settings, "public_hostname", "venue.test")
+
+
+def test_a_voice_message_inside_the_window_is_dialled(monkeypatch):
+    """A row whose channel is voice is a call, not a text."""
+    _dialler_ready(monkeypatch)
+    always = make_business(config={"outbound": {"window_start": "00:00", "window_end": "23:59"}})
+    message_id = _queue_voice(always)
+
+    assert notifications.send_queued() >= 1
+    row = _message(message_id)
+    assert row.status == "sent"
+    assert row.provider_id.startswith("log-call-"), "went to the dialler, not the SMS provider"
+    assert row.attempts == 1
+
+
+def test_a_voice_message_outside_the_window_waits_for_it(monkeypatch):
+    """Nobody is rung by a restaurant at seven in the morning."""
+    _dialler_ready(monkeypatch)
+    now = datetime.now(UTC)
+    shut = make_business(config={"outbound": {
+        "window_start": _hhmm(now + timedelta(hours=2)),
+        "window_end": _hhmm(now + timedelta(hours=3)),
+    }})
+    message_id = _queue_voice(shut)
+
+    notifications.send_queued()
+    row = _message(message_id)
+    assert row.status == "queued", "still waiting"
+    assert row.provider_id is None
+    assert row.send_after is not None and row.send_after > now, "parked until the window opens"
+
+
+def test_outbound_calls_switched_off_fall_back_to_a_text(monkeypatch):
+    _dialler_ready(monkeypatch)
+    off = make_business(config={"outbound": {"enabled": False}})
+    message_id = _queue_voice(off)
+    notifications.send_queued()
+    assert _message(message_id).channel == "sms"
+
+
+def test_an_unanswered_call_rings_again_then_becomes_a_text(monkeypatch):
+    """PRD §13: two attempts, then the same words go by SMS."""
+    _dialler_ready(monkeypatch)
+    always = make_business(config={"outbound": {
+        "window_start": "00:00", "window_end": "23:59", "max_attempts": 2,
+    }})
+    message_id = _queue_voice(always)
+    notifications.send_queued()
+    first = _message(message_id)
+    assert first.attempts == 1
+
+    notifications.call_ended(first.provider_id, "no-answer")
+    second = _message(message_id)
+    assert second.status == "queued" and second.channel == "voice", "one more try"
+    assert second.send_after is not None, "but not straight away"
+
+    # make it due, ring again, unanswered again
+    from sqlalchemy import text
+
+    from calling_agent.db import transaction
+
+    with transaction() as conn:
+        conn.execute(text("UPDATE messages SET send_after = NULL WHERE id = :i"),
+                     {"i": str(message_id)})
+    notifications.send_queued()
+    rung_twice = _message(message_id)
+    assert rung_twice.attempts == 2
+    notifications.call_ended(rung_twice.provider_id, "no-answer")
+
+    final = _message(message_id)
+    assert final.channel == "sms" and final.status == "queued", "attempts spent: text instead"
+
+
+def test_an_answered_call_is_delivered_and_not_retried(monkeypatch):
+    _dialler_ready(monkeypatch)
+    always = make_business(config={"outbound": {"window_start": "00:00", "window_end": "23:59"}})
+    message_id = _queue_voice(always)
+    notifications.send_queued()
+    notifications.call_ended(_message(message_id).provider_id, "completed")
+    assert _message(message_id).status == "delivered"
+
+
+def test_a_status_for_a_call_we_did_not_place_is_ignored():
+    notifications.call_ended("CA-not-ours", "no-answer")   # must not raise

@@ -20,10 +20,11 @@ from fastapi import APIRouter, HTTPException, Request, Response, WebSocket
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy import text
 
-from .. import agent_tools, businesses
+from .. import agent_tools, businesses, notifications, sms_replies
+from ..agent_spec import AgentDefinition
 from ..call_log import CallRecorder
 from ..config import settings
-from ..db import fetch_one, transaction
+from ..db import fetch_one, readonly, transaction
 from ..session import AgentSession
 from ..transport import TwilioTransport
 
@@ -67,6 +68,30 @@ async def incoming_call(request: Request) -> Response:
     )
 
 
+@router.post("/twilio/sms")
+async def incoming_sms(request: Request) -> Response:
+    """A guest texted the venue's number back. Usually "C".
+
+    The reply goes back as TwiML so it lands in seconds. An unrouted number
+    gets no reply at all: answering a text to a number we do not serve would
+    tell whoever is probing which numbers are ours.
+    """
+    form = await _verified_form(request)
+    ours = (form.get("To") or "").strip()
+    sender = (form.get("From") or "").strip()
+    body = form.get("Body") or ""
+
+    business = _business_for(ours)
+    if business is None:
+        log.warning("text to unrouted number %s", ours)
+        return _twiml("<Response/>")
+
+    reply = sms_replies.handle(business, sender, body, our_number=ours)
+    if not reply:
+        return _twiml("<Response/>")
+    return _twiml(f"<Response><Message>{_xml_escape(reply)}</Message></Response>")
+
+
 @router.post("/twilio/status")
 async def call_status(request: Request) -> Response:
     """Close the call record when Twilio says the call ended."""
@@ -77,6 +102,10 @@ async def call_status(request: Request) -> Response:
 
     if not call_sid:
         return Response(status_code=204)
+
+    # Only a call we placed has a message behind it; for an inbound call this
+    # finds nothing and does nothing.
+    notifications.call_ended(call_sid, (form.get("CallStatus") or "").strip())
 
     with transaction() as conn:
         conn.execute(
@@ -110,13 +139,84 @@ async def media_stream(websocket: WebSocket, ticket: str = "") -> None:
         return
 
     await websocket.accept()
-    business_id, call_id = claim
+    business_id, call_id, message_id = claim
+    agent = (
+        _callback_agent(business_id, call_id, message_id)
+        if message_id
+        else agent_tools.agent_for(business_id=business_id, call_id=call_id)
+    )
     await AgentSession(
         TwilioTransport(websocket),
-        agent=agent_tools.agent_for(business_id=business_id, call_id=call_id),
+        agent=agent,
         recorder=CallRecorder(business_id=business_id, call_id=call_id),
     ).run()
     await _close_call(call_id)
+
+
+def _callback_agent(business_id: str, call_id: str, message_id: str) -> AgentDefinition:
+    """The agent for a call we placed: the usual one, told why it rang."""
+    from dataclasses import replace
+
+    from ..agent_config import build_outbound_prompt, outbound_greeting
+
+    try:
+        business = businesses.by_id(business_id)
+    except businesses.UnknownBusiness:
+        return agent_tools.unconfigured_agent(f"no business {business_id}")
+
+    with readonly() as conn:
+        message = fetch_one(
+            conn,
+            "SELECT m.body, b.name FROM messages m"
+            " LEFT JOIN bookings b ON b.id = m.booking_id"
+            " WHERE m.id = :i AND m.business_id = :b",
+            i=message_id,
+            b=business_id,
+        )
+    if message is None:
+        return agent_tools.unconfigured_agent(f"no message {message_id}")
+
+    guest = (message.name or "").strip()
+    agent = agent_tools.build_agent(
+        business,
+        call_id=call_id,
+        prompt_builder=lambda: build_outbound_prompt(business, body=message.body, guest_name=guest),
+    )
+    return replace(agent, greeting=outbound_greeting(business, guest))
+
+
+@router.post("/twilio/outbound")
+async def answered_callback(request: Request, m: str = "") -> Response:
+    """Twilio fetches this when a call WE placed is answered.
+
+    Same shape as /twilio/voice, with one more fact: which message this call
+    is delivering. Trusting `m` is safe because Twilio signs the request,
+    URL included, and _verified_form refuses anything it did not sign.
+    """
+    form = await _verified_form(request)
+    call_sid = (form.get("CallSid") or "").strip()
+    answered = (form.get("To") or "").strip()
+
+    with readonly() as conn:
+        message = fetch_one(
+            conn,
+            "SELECT id, business_id FROM messages WHERE id = :i AND channel = 'voice'",
+            i=m,
+        ) if m else None
+    if message is None:
+        log.warning("answered callback for unknown message %r", m)
+        return _twiml("<Response><Hangup/></Response>")
+
+    call_id = _open_call_record(
+        message.business_id, answered, call_sid, direction="outbound"
+    )
+    ticket = issue_stream_ticket(message.business_id, call_id, str(message.id))
+    stream_url = f"{_stream_url(request)}?ticket={ticket}"
+    return _twiml(
+        "<Response>"
+        f'<Connect><Stream url="{_xml_escape(stream_url)}" /></Connect>'
+        "</Response>"
+    )
 
 
 # --- stream tickets ----------------------------------------------------------
@@ -137,12 +237,21 @@ def _serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(secret, salt=_TICKET_SALT)
 
 
-def issue_stream_ticket(business_id: UUID | str, call_id: str) -> str:
-    return _serializer().dumps({"b": str(business_id), "c": call_id})
+def issue_stream_ticket(
+    business_id: UUID | str, call_id: str, message_id: str | None = None
+) -> str:
+    claim = {"b": str(business_id), "c": call_id}
+    if message_id:
+        # Set only on a call WE placed: the stream then knows why it rang.
+        claim["m"] = message_id
+    return _serializer().dumps(claim)
 
 
-def read_stream_ticket(ticket: str) -> tuple[str, str] | None:
-    """The business and call this stream is for, or None if it cannot be trusted."""
+def read_stream_ticket(ticket: str) -> tuple[str, str, str | None] | None:
+    """The business, call and (for a callback) message this stream is for.
+
+    None if it cannot be trusted.
+    """
     if not ticket:
         return None
     try:
@@ -151,7 +260,7 @@ def read_stream_ticket(ticket: str) -> tuple[str, str] | None:
         return None
     except HTTPException:
         raise
-    return str(claim.get("b", "")), str(claim.get("c", ""))
+    return str(claim.get("b", "")), str(claim.get("c", "")), claim.get("m") or None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -194,16 +303,20 @@ def _business_for(dialled_number: str):
         return None
 
 
-def _open_call_record(business_id: UUID, caller: str, call_sid: str) -> str:
+def _open_call_record(
+    business_id: UUID | str, caller: str, call_sid: str, *, direction: str = "inbound"
+) -> str:
     with transaction() as conn:
         row = fetch_one(
             conn,
             "INSERT INTO calls (business_id, caller_phone, provider, provider_call_id,"
-            " outcome, resolved) VALUES (:b, :caller, 'twilio', :sid, 'in_progress', true)"
+            " outcome, resolved, direction)"
+            " VALUES (:b, :caller, 'twilio', :sid, 'in_progress', true, :dir)"
             " RETURNING id",
             b=str(business_id),
             caller=caller,
             sid=call_sid,
+            dir=direction,
         )
     return str(row.id)
 

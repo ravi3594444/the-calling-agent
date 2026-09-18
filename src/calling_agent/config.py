@@ -110,6 +110,11 @@ class Settings(BaseSettings):
     verify_twilio_signature: bool = Field(default=True, alias="VERIFY_TWILIO_SIGNATURE")
     # sms provider: "twilio" sends, "log" records the message and sends nothing.
     sms_provider: str = Field(default="log", alias="SMS_PROVIDER")
+    # voice provider: "twilio" rings the guest, "log" records that it would have.
+    # Same default and for the same reason: a fresh checkout must not dial anyone.
+    voice_provider: str = Field(default="log", alias="VOICE_PROVIDER")
+    # How long an unanswered callback waits before ringing again.
+    redial_after_minutes: int = Field(default=10, alias="REDIAL_AFTER_MINUTES")
 
     # --- Reading a photographed menu (PRD §14) --------------------------
     # Empty means no reader: the dashboard hides the button rather than

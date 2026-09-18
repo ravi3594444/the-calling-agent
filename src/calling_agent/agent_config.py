@@ -251,6 +251,52 @@ def venue_block_for(business: Business) -> str:
     )
 
 
+OUTBOUND_BLOCK = """
+
+THIS IS A CALL YOU PLACED
+You rang {name} on behalf of {display_name}. They did not ring you, so lead
+with why you called, in one sentence, and expect to be asked who you are.
+
+The reason for the call, written the way a text would put it:
+    "{body}"
+
+Say that in your own words. Then help with whatever comes of it, using your
+tools exactly as you would on an incoming call: if they want the time you
+offered, hold it and confirm it; if they want something else, check it.
+Never promise anything a tool has not just confirmed.
+
+If it goes to voicemail, leave the reason and the venue's name in two
+sentences and hang up. Do not leave a booking reference on a voicemail.
+Keep the whole call short -- you interrupted their day.
+"""
+
+
+def build_outbound_prompt(business: Business, *, body: str, guest_name: str) -> str:
+    """The base prompt, plus the one thing an inbound call never needs: why we rang.
+
+    Built on `build_prompt_for` rather than beside it, so the persona, the
+    tools, the allergy rules and the venue facts all apply to a callback too.
+    A separate prompt for outbound calls would drift from the inbound one
+    within a month.
+    """
+    identity = business.config["identity"]
+    return build_prompt_for(business) + OUTBOUND_BLOCK.format(
+        name=guest_name or "the guest",
+        display_name=identity["display_name"] or business.name,
+        body=body.replace('"', "'"),
+    )
+
+
+def outbound_greeting(business: Business, guest_name: str) -> str:
+    """The first thing they hear when they pick up. Who, from where, for whom."""
+    identity = business.config["identity"]
+    venue = identity["display_name"] or business.name
+    agent = identity["agent_name"]
+    who = f"this is {agent} from {venue}" if agent else f"I'm calling from {venue}"
+    for_whom = f", calling for {guest_name}" if guest_name else ""
+    return f"Hi, {who}{for_whom}. Is now an okay moment?"
+
+
 def greeting_for(business: Business) -> str:
     """The first thing the caller hears. Configured, or composed from identity."""
     identity = business.config["identity"]

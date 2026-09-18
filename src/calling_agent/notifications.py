@@ -295,10 +295,14 @@ def _twilio_provider(to: str, body: str, business: Business) -> str:
 
 
 def send_queued(limit: int = 50) -> int:
-    """Send what is queued. Called by the worker, never by a request.
+    """Send what is due. Called by the worker, never by a request.
 
     Rows are claimed with SKIP LOCKED so two workers share the queue rather
-    than sending the same text twice.
+    than sending the same text twice. Texts go to the SMS provider; a message
+    whose channel is `voice` is a call, and goes to the dialler instead --
+    but only inside the venue's calling window, and only if outbound calls
+    are switched on. Outside the window it is parked until it opens: nobody
+    gets rung by a restaurant at seven in the morning.
     """
     sender = PROVIDERS.get(settings.sms_provider)
     if sender is None:
@@ -309,33 +313,138 @@ def send_queued(limit: int = 50) -> int:
     with transaction() as conn:
         rows = fetch_all(
             conn,
-            "SELECT m.id, m.business_id, m.to_address, m.body, m.channel, m.kind FROM messages m"
+            "SELECT m.id, m.business_id, m.to_address, m.body, m.channel, m.kind, m.attempts"
+            "  FROM messages m"
             " WHERE m.status = 'queued' AND m.direction = 'outbound'"
+            "   AND (m.send_after IS NULL OR m.send_after <= now())"
             " ORDER BY m.created_at LIMIT :limit FOR UPDATE SKIP LOCKED",
             limit=limit,
         )
         for row in rows:
             business = businesses.by_id(row.business_id)
+            if row.channel == "voice":
+                sent += _ring(conn, business, row)
+                continue
             try:
                 provider_id = sender(row.to_address, row.body, business)
             except Exception as exc:  # noqa: BLE001 - one bad number must not stop the queue
-                log.warning("message %s failed: %s", row.id, exc)
-                conn.execute(
-                    text(
-                        "UPDATE messages SET status = 'failed', error = :e WHERE id = :i"
-                    ),
-                    {"e": str(exc)[:500], "i": str(row.id)},
-                )
+                _mark_failed(conn, row.id, exc)
                 continue
-            conn.execute(
-                text(
-                    "UPDATE messages SET status = 'sent', provider_id = :p, sent_at = now()"
-                    " WHERE id = :i"
-                ),
-                {"p": provider_id, "i": str(row.id)},
-            )
+            _mark_sent(conn, row.id, provider_id)
             sent += 1
     return sent
+
+
+def _ring(conn: Connection, business: Business, row: Any) -> int:
+    """Place one call, or park the message until it may be placed."""
+    from . import dialler
+
+    if not business.config["outbound"].get("enabled", True):
+        # Switched off after it was queued. A text is the honest fallback.
+        conn.execute(
+            text("UPDATE messages SET channel = 'sms' WHERE id = :i"), {"i": str(row.id)}
+        )
+        log.info("outbound calls are off for %s; %s will go as a text", business.slug, row.id)
+        return 0
+
+    if not within_calling_window(business):
+        conn.execute(
+            text("UPDATE messages SET send_after = :at WHERE id = :i"),
+            {"at": next_calling_window(business), "i": str(row.id)},
+        )
+        return 0
+
+    try:
+        call_id = dialler.place(business, row.id, row.to_address)
+    except Exception as exc:  # noqa: BLE001 - a refused dial must not stop the queue
+        _mark_failed(conn, row.id, exc)
+        return 0
+    conn.execute(
+        text(
+            "UPDATE messages SET status = 'sent', provider_id = :p, sent_at = now(),"
+            " attempts = attempts + 1 WHERE id = :i"
+        ),
+        {"p": call_id, "i": str(row.id)},
+    )
+    return 1
+
+
+def call_ended(call_sid: str, outcome: str) -> None:
+    """The status webhook says how an outbound call went. Decide what is next.
+
+    Answered: done. Not answered, and attempts left: ring again after a
+    while. Attempts spent: the same words go as a text, because PRD §13
+    says a guest who could not be reached by phone is still told.
+    """
+    with transaction() as conn:
+        row = fetch_one(
+            conn,
+            "SELECT id, business_id, attempts FROM messages"
+            " WHERE provider_id = :sid AND channel = 'voice' FOR UPDATE",
+            sid=call_sid,
+        )
+        if row is None:
+            return  # an inbound call, or not one of ours
+        if outcome == "completed":
+            conn.execute(
+                text("UPDATE messages SET status = 'delivered' WHERE id = :i"),
+                {"i": str(row.id)},
+            )
+            return
+
+        business = businesses.by_id(row.business_id)
+        max_attempts = int(business.config["outbound"].get("max_attempts", 2))
+        if row.attempts < max_attempts:
+            conn.execute(
+                text(
+                    "UPDATE messages SET status = 'queued', provider_id = NULL,"
+                    " send_after = now() + make_interval(mins => :wait) WHERE id = :i"
+                ),
+                {"wait": settings.redial_after_minutes, "i": str(row.id)},
+            )
+            log.info(
+                "call %s %s; ringing again later (attempt %d)", call_sid, outcome, row.attempts
+            )
+            return
+
+        conn.execute(
+            text(
+                "UPDATE messages SET status = 'queued', channel = 'sms', provider_id = NULL,"
+                " send_after = NULL WHERE id = :i"
+            ),
+            {"i": str(row.id)},
+        )
+        log.info("call %s %s after %d tries; sending as a text", call_sid, outcome, row.attempts)
+
+
+def next_calling_window(business: Business, moment: datetime | None = None) -> datetime:
+    """The next instant the venue may ring somebody."""
+    outbound = business.config["outbound"]
+    now = moment or datetime.now(UTC)
+    local = formatting.local(business, now)
+    start = _parse_time(outbound["window_start"])
+    opens_today = datetime.combine(local.date(), start, tzinfo=business.tz)
+    if local.time() < start:
+        return opens_today.astimezone(UTC)
+    return (opens_today + timedelta(days=1)).astimezone(UTC)
+
+
+def _mark_failed(conn: Connection, message_id: Any, exc: Exception) -> None:
+    log.warning("message %s failed: %s", message_id, exc)
+    conn.execute(
+        text("UPDATE messages SET status = 'failed', error = :e WHERE id = :i"),
+        {"e": str(exc)[:500], "i": str(message_id)},
+    )
+
+
+def _mark_sent(conn: Connection, message_id: Any, provider_id: str) -> None:
+    conn.execute(
+        text(
+            "UPDATE messages SET status = 'sent', provider_id = :p, sent_at = now()"
+            " WHERE id = :i"
+        ),
+        {"p": provider_id, "i": str(message_id)},
+    )
 
 
 # --- scheduling helpers ------------------------------------------------------

@@ -372,6 +372,7 @@ def transition(
     channel: str | None = None,
     alternative: datetime | None = None,
     allow_overflow: bool = False,
+    notify: bool = True,
 ) -> BookingRow:
     """Move one booking to one status, with every consequence, atomically.
 
@@ -423,7 +424,7 @@ def transition(
         _update_guest_history(conn, row, current, to_status)
         _after_transition(
             conn, business, row, current, to_status,
-            channel=channel, alternative=alternative,
+            channel=channel, alternative=alternative, notify=notify,
         )
 
     if to_status in (CANCELLED, DECLINED, NO_SHOW):
@@ -485,7 +486,15 @@ def _after_transition(
     *,
     channel: str | None,
     alternative: datetime | None,
+    notify: bool = True,
 ) -> None:
+    """Everything a status change owes the outside world.
+
+    `notify=False` skips the guest's text for a move the guest already knows
+    about -- they cancelled by replying "C", and the TwiML reply IS the
+    notice. The reminder and nudge are still cancelled either way: those are
+    about the booking existing, not about who was told.
+    """
     booking = _row(row)
     if after in (CANCELLED, DECLINED, NO_SHOW):
         notifications.cancel_tasks_for(conn, row.id, ["reminder", "arrival_nudge"])
@@ -505,7 +514,7 @@ def _after_transition(
             conn, business, booking, "declined",
             alternative=alternative, channel=_as_channel(told),
         )
-    elif after == CANCELLED:
+    elif after == CANCELLED and notify:
         notifications.queue_for_booking(conn, business, booking, "cancelled")
 
 
@@ -558,8 +567,10 @@ def decline(
     )
 
 
-def cancel(business: Business, booking_id: UUID | str, *, actor: str = "") -> BookingRow:
-    return transition(business, booking_id, CANCELLED, actor=actor)
+def cancel(
+    business: Business, booking_id: UUID | str, *, actor: str = "", notify: bool = True
+) -> BookingRow:
+    return transition(business, booking_id, CANCELLED, actor=actor, notify=notify)
 
 
 def mark_arrived(business: Business, booking_id: UUID | str, *, actor: str = "") -> BookingRow:
