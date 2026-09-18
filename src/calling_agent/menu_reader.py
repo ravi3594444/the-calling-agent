@@ -308,9 +308,24 @@ def _raise_for_provider(response: Any) -> None:
 # --- the boundary ------------------------------------------------------------
 
 
+#: The key each provider needs. Checked by `configured()` so the dashboard
+#: hides a button that would fail, rather than one that is merely named: a
+#: MENU_READER with no key beside it looked ready and failed on the click.
+KEYS = {
+    "gemini": "gemini_api_key",
+    "anthropic": "anthropic_api_key",
+    "openai": "openai_api_key",
+}
+
+
 def configured() -> bool:
-    """Is a reader set up? The dashboard hides the button when not."""
-    return bool(settings.menu_reader and settings.menu_reader in PROVIDERS)
+    """Is a reader set up AND holding a key? The dashboard hides it when not."""
+    name = settings.menu_reader
+    if not name or name not in PROVIDERS:
+        return False
+    attribute = KEYS.get(name)
+    # A provider registered at runtime (a test fake) needs no key of ours.
+    return bool(getattr(settings, attribute, "")) if attribute else True
 
 
 def read(business: Business, blob: bytes, content_type: str) -> list[ProposedDish]:

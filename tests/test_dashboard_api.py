@@ -220,12 +220,21 @@ def test_guests_carry_what_the_csv_export_writes(dash, business):
 
 
 def test_the_read_button_is_hidden_until_a_reader_is_set_up(dash, business, monkeypatch):
+    """A reader named in the env but missing its key must not offer a button.
+
+    That combination is what a half-finished .env looks like, and the button
+    it used to show failed only once the owner had pressed it.
+    """
     from calling_agent.config import settings
 
     monkeypatch.setattr(settings, "menu_reader", "")
+    monkeypatch.setattr(settings, "gemini_api_key", "")
     assert dash.get("/api/menu").json()["reader_configured"] is False
 
     monkeypatch.setattr(settings, "menu_reader", "gemini")
+    assert dash.get("/api/menu").json()["reader_configured"] is False, "named, but no key"
+
+    monkeypatch.setattr(settings, "gemini_api_key", "a-key")
     assert dash.get("/api/menu").json()["reader_configured"] is True
 
 

@@ -211,3 +211,19 @@ def test_an_unreadable_upload_is_refused_rather_than_guessed():
             menu_reader.read(None, b"x", "image/png")
     finally:
         settings.menu_reader = original
+
+
+def test_a_reader_with_no_key_is_not_offered():
+    """The button must not appear for a provider that will fail on the click."""
+    from calling_agent import menu_reader
+    from calling_agent.config import settings
+
+    original = (settings.menu_reader, settings.gemini_api_key)
+    try:
+        settings.menu_reader, settings.gemini_api_key = "gemini", ""
+        assert menu_reader.configured() is False, "named but keyless is not configured"
+
+        settings.gemini_api_key = "a-key"
+        assert menu_reader.configured() is True
+    finally:
+        settings.menu_reader, settings.gemini_api_key = original
