@@ -14,7 +14,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import text
+
 from calling_agent import agent_tools
+from calling_agent.db import readonly
 from tests.conftest import committed, future_slot, make_business
 
 
@@ -79,6 +82,51 @@ def test_a_refusal_says_which_instant_it_refused(business):
     requested = datetime.fromisoformat(out.data["requested"])
     current = datetime.fromisoformat(out.data["now"])
     assert requested.year < current.year, "the model cannot see the year it got wrong"
+
+
+def test_a_booking_survives_the_provider_s_own_tool_call_id(business):
+    """Dispatch through run_tool_for, the way a live call does.
+
+    Every other test calls agent_tools.hold() directly, so the argument the
+    dispatcher injects was never once exercised. It injected the provider's
+    opaque tool-call id -- "call_abc123" -- under the name `call_id`, which is
+    a uuid column naming a row in OUR calls table. Postgres refused it and the
+    caller was told, twice, that the system was not answering.
+    """
+    at = future_slot(business)
+    args = {"date": at.date().isoformat(), "time": at.strftime("%H:%M"), "units": 2}
+
+    held, failed = agent_tools.run_tool_for(business, "hold", args, "call_abc123")
+    assert not failed, held
+    assert held.data["ok"], held
+
+    booked, failed = agent_tools.run_tool_for(
+        business,
+        "confirm",
+        {"hold_id": held.data["hold_id"], "name": "Ravi", "phone": "+919876543210"},
+        "call_def456",
+    )
+    assert not failed, booked
+    assert booked.data["status"] == "confirmed"
+
+
+def test_a_call_record_is_linked_to_the_booking_it_produced(business, call_record):
+    """Bound at the edge, like the business -- not taken from the model."""
+    at = future_slot(business)
+    agent = agent_tools.build_agent(business, call_id=call_record)
+
+    held, _ = agent.run_tool(
+        "hold", {"date": at.date().isoformat(), "time": at.strftime("%H:%M"), "units": 2}, "tc_1"
+    )
+    booked, _ = agent.run_tool(
+        "confirm", {"hold_id": held.data["hold_id"], "name": "Ravi"}, "tc_2"
+    )
+
+    with readonly() as conn:
+        row = conn.execute(
+            text("SELECT booking_id FROM calls WHERE id = :c"), {"c": str(call_record)}
+        ).first()
+    assert str(row[0]) == booked.data["booking_id"]
 
 
 def test_far_future_is_refused(business):

@@ -164,6 +164,19 @@ def business():
     return make_business()
 
 
+@pytest.fixture
+def call_record(business):
+    """A row in `calls`, the way a phone call makes one before the agent starts."""
+    from calling_agent.db import transaction
+
+    with transaction() as conn:
+        row = conn.execute(
+            text("INSERT INTO calls (business_id) VALUES (:b) RETURNING id"),
+            {"b": str(business.id)},
+        ).first()
+    return row[0]
+
+
 def future_slot(business, *, days_ahead: int = 2, hour: int = 19, minute: int = 0) -> datetime:
     """A bookable instant, expressed in the business's own timezone."""
     local_day = datetime.now(business.tz).date() + timedelta(days=days_ahead)

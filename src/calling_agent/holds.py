@@ -29,6 +29,29 @@ from .records import Booking
 log = logging.getLogger(__name__)
 
 
+def _our_call_id(call_id: UUID | str | None) -> str | None:
+    """Our own `calls.id`, or nothing. Never someone else's identifier.
+
+    `holds.call_id` is a uuid column naming a row in our `calls` table. A
+    provider's opaque tool-call id once arrived here under the same name and
+    Postgres rejected it, which cost a real caller their table -- the hold is
+    the booking, and it died over a field that is only ever used to say which
+    conversation produced it.
+
+    So the value is checked here rather than trusted from the caller, and a
+    value that is not ours is dropped with a warning instead of raised. Losing
+    the link between a call and its booking is a worse dashboard; losing the
+    hold is a worse restaurant.
+    """
+    if call_id is None:
+        return None
+    try:
+        return str(UUID(str(call_id)))
+    except ValueError:
+        log.warning("ignoring a call_id that is not one of ours: %r", call_id)
+        return None
+
+
 class HoldError(Exception):
     """Base for every refusal a caller of this module must handle."""
 
@@ -171,7 +194,7 @@ def _insert_hold(
         u=units,
         end=end,
         ttl=ttl,
-        call=str(call_id) if call_id else None,
+        call=_our_call_id(call_id),
     )
     assert row is not None
     return row.id
@@ -251,10 +274,10 @@ def confirm(
             text("UPDATE holds SET converted_booking_id = :bk WHERE id = :h"),
             {"bk": str(booking.id), "h": str(held.id)},
         )
-        if call_id:
+        if (ours := _our_call_id(call_id)) is not None:
             conn.execute(
                 text("UPDATE calls SET booking_id = :bk WHERE id = :c AND business_id = :b"),
-                {"bk": str(booking.id), "c": str(call_id), "b": str(business.id)},
+                {"bk": str(booking.id), "c": ours, "b": str(business.id)},
             )
     return booking
 

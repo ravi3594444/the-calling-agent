@@ -113,7 +113,7 @@ async def media_stream(websocket: WebSocket, ticket: str = "") -> None:
     business_id, call_id = claim
     await AgentSession(
         TwilioTransport(websocket),
-        agent=agent_tools.agent_for(business_id=business_id),
+        agent=agent_tools.agent_for(business_id=business_id, call_id=call_id),
         recorder=CallRecorder(business_id=business_id, call_id=call_id),
     ).run()
     await _close_call(call_id)

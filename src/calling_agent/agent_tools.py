@@ -9,9 +9,12 @@ engine, and return a sentence the agent can say. Guard clauses first, the real
 work last, so the successful path reads top to bottom.
 
 WHAT A TOOL RETURNS
-A `Spoken` -- a string the agent reads aloud, carrying a `.data` payload the
-dashboard and the call log use. It is a str subclass so the relay, which has
-only ever handled strings, needs no change.
+A `Spoken` -- a string the agent reads aloud, carrying a `.data` payload. The
+dashboard and the call log read the string; the model is sent both, encoded as
+the JSON document the API asks for (see `session.encode_tool_result`). Being a
+str subclass is what let the relay stay unchanged, and it is also what once
+hid `.data` from the model entirely: json.dumps serialises a str subclass as
+its string and says nothing about the rest.
 """
 
 from __future__ import annotations
@@ -753,17 +756,30 @@ IMPLEMENTATIONS = {
 
 
 def run_tool_for(
-    business: Business, name: str, args: dict[str, Any], call_id: str = ""
+    business: Business,
+    name: str,
+    args: dict[str, Any],
+    tool_call_id: str = "",
+    *,
+    call_id: UUID | str | None = None,
 ) -> tuple[str, bool]:
     """Dispatch one tool call. Never raises: the API wants errors flagged.
 
     An exception here would drop the call. A flagged error lets the agent say
     "let me check that with the kitchen" and keep the caller on the line.
+
+    TWO IDENTIFIERS, DELIBERATELY NOT ONE NAME
+    `tool_call_id` is the provider's opaque string for this invocation.
+    `call_id` is a row in OUR `calls` table, bound when the call connected.
+    They used to share the name `call_id`, so the provider's string reached a
+    uuid column and every hold on a live call died on it. A tool asking for
+    "call_id" means ours, and can only ever be given ours.
     """
     implementation = IMPLEMENTATIONS.get(name)
     if implementation is not None:
         try:
-            return implementation(business, {**args, "call_id": call_id}), False
+            enriched = {**args, "tool_call_id": tool_call_id, "call_id": call_id}
+            return implementation(business, enriched), False
         except Exception:  # noqa: BLE001 - reported to the agent, not the caller
             log.exception("tool %s failed for %s", name, business.slug)
             return TOOL_FAILED, True
@@ -779,7 +795,9 @@ def run_tool_for(
     return f"No tool named {name}.", True
 
 
-def build_agent(business: Business, *, prompt_builder=None) -> AgentDefinition:
+def build_agent(
+    business: Business, *, prompt_builder=None, call_id: UUID | str | None = None
+) -> AgentDefinition:
     """One AgentDefinition for one business. This is the multi-tenancy seam.
 
     The relay in session.py takes an AgentDefinition and knows nothing else.
@@ -795,7 +813,9 @@ def build_agent(business: Business, *, prompt_builder=None) -> AgentDefinition:
         build_prompt=prompt_builder or (lambda: build_prompt_for(business)),
         greeting=greeting_for(business),
         tools=tool_declarations(business),
-        run_tool=lambda name, args, call_id="": run_tool_for(business, name, args, call_id),
+        run_tool=lambda name, args, tool_call_id="": run_tool_for(
+            business, name, args, tool_call_id, call_id=call_id
+        ),
         voice=business.config["voice"]["voice_id"] or None,
     )
 
@@ -825,7 +845,7 @@ def unconfigured_agent(reason: str) -> AgentDefinition:
         ),
         greeting=message,
         tools=[],
-        run_tool=lambda name, args, call_id="": ("This line is not configured.", True),
+        run_tool=lambda name, args, tool_call_id="": ("This line is not configured.", True),
     )
 
 
@@ -834,6 +854,7 @@ def agent_for(
     dialled_number: str | None = None,
     slug: str | None = None,
     business_id: str | None = None,
+    call_id: UUID | str | None = None,
 ) -> AgentDefinition:
     """The agent for one call, resolved from whatever the transport knows.
 
@@ -856,7 +877,7 @@ def agent_for(
 
     if business.status != "active":
         return unconfigured_agent(f"business {business.slug} is {business.status}")
-    return build_agent(business)
+    return build_agent(business, call_id=call_id)
 
 
 def default_agent() -> AgentDefinition:
