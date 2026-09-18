@@ -396,7 +396,18 @@ def business_info(business: Business, _args: dict[str, Any]) -> Spoken:
         )
         week.append(f"{day.strftime('%A')}: {spans}")
     lines.append("This week: " + "; ".join(week) + ".")
-    return Spoken(" ".join(lines), hours=week)
+
+    # The owner's own answers to the questions that are not a booking.
+    from .agent_config import VENUE_LABELS
+
+    venue = business.config.get("venue") or {}
+    facts = {
+        label: venue[key].strip()
+        for key, label in VENUE_LABELS
+        if (venue.get(key) or "").strip()
+    }
+    lines += [f"{label}: {value}." for label, value in facts.items()]
+    return Spoken(" ".join(lines), hours=week, venue=facts)
 
 
 # --- argument handling -------------------------------------------------------

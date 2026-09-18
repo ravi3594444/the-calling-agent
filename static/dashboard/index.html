@@ -620,6 +620,20 @@ dialog.sheet .sheet-err.on{display:block}
       <div class="save"><button class="btn key">Save changes</button><span class="note">The agent uses it from the next call.</span></div>
     </section>
 
+    <section class="card">
+      <div class="card-h"><div><h2>About the place</h2><p>The questions callers ask that aren't a booking. Anything you leave blank, the agent says it will check rather than guess.</p></div></div>
+      <div class="card-b grid">
+        <div class="f"><label>The food</label><input data-cfg="venue.cuisine" placeholder="Modern North Indian, a few Goan dishes"></div>
+        <div class="f"><label>Getting there</label><input data-cfg="venue.getting_there" placeholder="Opposite the blue chapel, two minutes up from the bridge"></div>
+        <div class="f"><label>Parking</label><input data-cfg="venue.parking" placeholder="Free on the street after 6; a paid car park behind the church"></div>
+        <div class="f"><label>Wheelchair access</label><input data-cfg="venue.wheelchair_access" placeholder="Step-free from the street, accessible toilet on the ground floor"></div>
+        <div class="f"><label>Children</label><input data-cfg="venue.children" placeholder="Welcome, high chairs available, kids' portions on request"></div>
+        <div class="f"><label>Dress code</label><input data-cfg="venue.dress_code" placeholder="Smart casual; no shorts in the evening"></div>
+        <div class="f" style="grid-column:1/-1"><label>Private room</label><input data-cfg="venue.private_room" placeholder="Seats 14, minimum spend on Fridays, ask for Priya"></div>
+      </div>
+      <div class="save"><button class="btn key">Save changes</button><span class="note">Write it the way you'd say it on the phone. The agent puts it in its own words.</span></div>
+    </section>
+
     <section class="card" id="hoursCard" data-section="hours">
       <div class="card-h"><div><h2>Hours</h2><p>When you're open. Leave a day unticked and the agent says you're closed.</p></div></div>
       <div class="card-b" id="hoursRows"></div>
@@ -732,6 +746,16 @@ dialog.sheet .sheet-err.on{display:block}
       </div>
       <div class="help" id="fieldHelp" style="padding:0 20px 16px"></div>
       <div class="save"><button class="btn key">Save changes</button><span class="note">A field the system doesn't know is refused rather than sent as text.</span></div>
+    </section>
+
+    <section class="card">
+      <div class="card-h"><div><h2>Who on your team gets told</h2><p>Tonight's list at the hour you pick, and a line thirty minutes before each table. Both by text, to one phone.</p></div></div>
+      <div class="card-b grid three">
+        <div class="f"><label>Staff phone</label><input type="tel" data-cfg="messaging.staff_number" placeholder="+91 98765 43210"><div class="help">Leave it empty and nothing is sent.</div></div>
+        <div class="f"><label>Tonight's list</label><select data-cfg="messaging.send_digest"><option value="true">Send it</option><option value="false">Don't</option></select></div>
+        <div class="f"><label>Arrival nudges</label><select data-cfg="messaging.send_nudges"><option value="true">Send them</option><option value="false">Don't</option></select></div>
+      </div>
+      <div class="save"><button class="btn key">Save changes</button><span class="note">Takes effect from the next scheduled one. Tonight's list is scheduled once a day.</span></div>
     </section>
 
     <section class="card">

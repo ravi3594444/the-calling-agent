@@ -502,3 +502,64 @@ def test_a_retried_reminder_does_not_text_the_guest_twice(business):
             {"b": str(booking.id)},
         ).scalar_one()
     assert sent == 1, "three runs of one task is still one text"
+
+
+# --- the staff phone --------------------------------------------------------
+
+
+def _staff_texts(business, kind):
+    from sqlalchemy import text
+
+    from calling_agent.db import readonly
+
+    with readonly() as conn:
+        return conn.execute(
+            text("SELECT to_address, body FROM messages WHERE business_id = :b AND kind = :k"),
+            {"b": str(business.id), "k": kind},
+        ).fetchall()
+
+
+def test_the_digest_is_texted_to_the_staff_number_once(business):
+    """It computed the right list for weeks and nobody saw it."""
+    from calling_agent import jobs
+
+    at = future_slot(business, days_ahead=0, hour=19)
+    held = holds.take(business.id, at, 3)
+    holds.confirm(business.id, held.hold_id, name="Sharma", phone=a_number())
+
+    staffed = make_business(config={"messaging": {"staff_number": "+919999900001"}})
+    task = {"id": _queue_task(staffed, reason="digest")}
+    jobs.daily_digest(staffed, task)
+    jobs.daily_digest(staffed, task)          # a retry is not a second text
+
+    sent = _staff_texts(staffed, "digest")
+    assert len(sent) == 1
+    assert sent[0].to_address == "+919999900001"
+    assert "tonight" in sent[0].body
+
+
+def test_no_staff_number_means_no_text_and_no_error(business):
+    from calling_agent import jobs
+
+    jobs.daily_digest(business, {"id": _queue_task(business, reason="digest")})
+    assert _staff_texts(business, "digest") == []
+
+
+def test_the_nudge_switch_turns_nudges_off_but_not_the_digest(business):
+    from calling_agent import jobs
+
+    staffed = make_business(
+        config={"messaging": {"staff_number": "+919999900002", "send_nudges": False}}
+    )
+    at = future_slot(staffed)
+    held = holds.take(staffed.id, at, 2)
+    booking = holds.confirm(staffed.id, held.hold_id, name="Patel", phone=a_number())
+
+    jobs.arrival_nudge(
+        staffed, {"id": _queue_task(staffed, reason="arrival_nudge", booking_id=booking.id),
+                  "booking_id": booking.id},
+    )
+    assert _staff_texts(staffed, "nudge") == [], "switched off"
+
+    jobs.daily_digest(staffed, {"id": _queue_task(staffed, reason="digest")})
+    assert len(_staff_texts(staffed, "digest")) == 1, "the other switch is still on"

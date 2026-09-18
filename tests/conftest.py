@@ -142,6 +142,10 @@ def make_business(**overrides):
         phone_number=overrides.pop("phone_number", None),
         config=config,
     )
+    if overrides:
+        raise TypeError(
+            f"make_business() got {sorted(overrides)}: section overrides go under config="
+        )
     businesses.set_capacity_rules(
         business.id,
         [

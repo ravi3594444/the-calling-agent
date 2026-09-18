@@ -48,6 +48,18 @@ DEFAULTS: dict[str, Any] = {
         "price_band": "",
         "public_url": "",
     },
+    # The things callers ask that are not on the menu and not a booking. Free
+    # text on purpose: "children welcome until eight" is an answer, a boolean
+    # is a shrug. Empty means the agent says it will check, never guesses.
+    "venue": {
+        "cuisine": "",
+        "dress_code": "",
+        "parking": "",
+        "wheelchair_access": "",
+        "getting_there": "",
+        "private_room": "",
+        "children": "",
+    },
     "locale": {
         "country": "IN",
         "currency": "INR",
@@ -98,6 +110,12 @@ DEFAULTS: dict[str, Any] = {
         "reminder_hours_before": 24,
         "digest_local_time": "17:00",
         "arrival_nudge_minutes": 30,
+        # Where the digest and arrival nudges go. Empty means they go nowhere
+        # but the log; the two switches let the owner keep one and drop the
+        # other once a number is set.
+        "staff_number": "",
+        "send_digest": True,
+        "send_nudges": True,
         "templates": {
             "confirmed": (
                 "{display_name}: booked for {party_size} on {date_long} at {time}. "
@@ -173,6 +191,17 @@ SCHEMA: dict[str, Any] = {
                 "public_url": {"type": "string", "maxLength": 500},
             },
         },
+        "venue": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                key: {"type": "string", "maxLength": 300}
+                for key in (
+                    "cuisine", "dress_code", "parking", "wheelchair_access",
+                    "getting_there", "private_room", "children",
+                )
+            },
+        },
         "locale": {
             "type": "object",
             "additionalProperties": False,
@@ -243,6 +272,9 @@ SCHEMA: dict[str, Any] = {
                 "reminder_hours_before": {"type": "integer", "minimum": 1, "maximum": 168},
                 "digest_local_time": {"type": "string", "pattern": _TIME},
                 "arrival_nudge_minutes": {"type": "integer", "minimum": 0, "maximum": 240},
+                "staff_number": {"type": "string", "maxLength": 32},
+                "send_digest": {"type": "boolean"},
+                "send_nudges": {"type": "boolean"},
                 "templates": {
                     "type": "object",
                     "additionalProperties": {"type": "string", "maxLength": 1000},

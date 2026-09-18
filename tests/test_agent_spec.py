@@ -17,6 +17,7 @@ from calling_agent.agent_spec import AgentDefinition
 from calling_agent.config import settings
 from calling_agent.session import AgentSession
 from calling_agent.transport.base import AudioTransport
+from tests.conftest import make_business
 
 
 def _definition(**overrides) -> AgentDefinition:
@@ -392,3 +393,35 @@ def test_the_prompt_carries_the_connect_date_so_no_round_trip_is_needed(business
 
     assert today.isoformat() in prompt, "the model still has to ask what year it is"
     assert "now() only when" in prompt, "nothing stops it asking anyway"
+
+
+# --- what the agent knows about the place ------------------------------------
+
+
+def test_venue_facts_reach_the_prompt_and_only_the_ones_that_are_set():
+    """An empty field is not "no". A venue that left parking blank may have
+    plenty, so the block lists only what the owner wrote and the standing
+    rule -- offer to check -- covers the rest."""
+    from calling_agent.agent_config import build_prompt_for, venue_block_for
+
+    business = make_business(config={"venue": {"parking": "Free on the street after 6", "children": ""}})
+    block = venue_block_for(business)
+    assert "Parking: Free on the street after 6" in block
+    assert "Children" not in block, "a blank field must not be listed as anything"
+    assert "offer to check" in block
+
+    prompt = " ".join(build_prompt_for(business).split())
+    assert "ABOUT THE PLACE" in prompt
+
+    silent = make_business()
+    assert venue_block_for(silent) == "", "nothing set, nothing said"
+    assert "ABOUT THE PLACE" not in build_prompt_for(silent)
+
+
+def test_business_info_answers_from_the_venue_fields():
+    from calling_agent import agent_tools
+
+    business = make_business(config={"venue": {"wheelchair_access": "Step-free from the street"}})
+    said = agent_tools.business_info(business, {})
+    assert "Wheelchair access: Step-free from the street." in said
+    assert said.data["venue"] == {"Wheelchair access": "Step-free from the street"}

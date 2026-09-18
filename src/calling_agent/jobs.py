@@ -201,7 +201,7 @@ def close_overflow(business: Business, task: dict[str, Any]) -> None:
 
 @handles("arrival_nudge")
 def arrival_nudge(business: Business, task: dict[str, Any]) -> None:
-    """"7:00 — Sharma, 5, regular", to the staff, half an hour before."""
+    """"7:00 — Sharma, 5, regular", to the staff phone, half an hour before."""
     booking = bookings.by_id(business, task["booking_id"])
     if booking.status != bookings.CONFIRMED:
         return
@@ -213,22 +213,63 @@ def arrival_nudge(business: Business, task: dict[str, Any]) -> None:
         line += ", regular"
     if booking.notes:
         line += f" — {booking.notes}"
-    log.info("[staff:%s] %s", business.slug, line)
+    _tell_staff(business, task, "nudge", line, switch="send_nudges")
 
 
 @handles("digest")
 def daily_digest(business: Business, task: dict[str, Any]) -> None:
     """Tonight's list, once, at the hour the venue chose."""
     today = datetime.now(business.tz).date()
-    tonight = [
-        b for b in bookings.on_local_date(business, today)
-        if b.status in (bookings.CONFIRMED, bookings.ARRIVED)
-    ]
-    covers = sum(b.party_size for b in tonight)
-    log.info(
-        "[digest:%s] %d bookings, %d %s tonight",
-        business.slug, len(tonight), covers, business.unit_plural,
+    tonight = sorted(
+        (
+            b for b in bookings.on_local_date(business, today)
+            if b.status in (bookings.CONFIRMED, bookings.ARRIVED)
+        ),
+        key=lambda b: b.start_time,
     )
+    covers = sum(b.party_size for b in tonight)
+    name = business.config["identity"]["display_name"] or business.name
+    head = f"{name} tonight: {len(tonight)} bookings, {covers} {business.unit_plural}."
+    if not tonight:
+        _tell_staff(business, task, "digest", head, switch="send_digest")
+        return
+
+    # A text, not a report. Twelve lines is a full screen; past that, a count
+    # is more use than a scroll, and the dashboard has the rest.
+    shown = tonight[:DIGEST_LINES]
+    lines = [
+        f"{formatting.time_str(business, b.start_time)} {b.name} x{b.party_size}"
+        + (" (regular)" if b.visits >= 4 else "")
+        for b in shown
+    ]
+    if len(tonight) > len(shown):
+        lines.append(f"+{len(tonight) - len(shown)} more")
+    _tell_staff(business, task, "digest", head + "\n" + "\n".join(lines), switch="send_digest")
+
+
+#: Lines of bookings in the digest text before it says "+N more".
+DIGEST_LINES = 12
+
+
+def _tell_staff(
+    business: Business, task: dict[str, Any], kind: str, body: str, *, switch: str
+) -> None:
+    """Queue a text to the staff number, if there is one and the switch is on.
+
+    Logged either way. The digest and the nudge computed the right thing for
+    weeks and nobody saw it, because the only reader was this log line -- so
+    the log stays as the record, and the text is what a person gets. Deduped
+    on the task, like every retried message.
+    """
+    log.info("[%s:%s] %s", kind, business.slug, body.replace("\n", " | "))
+    messaging = business.config["messaging"]
+    to = (messaging.get("staff_number") or "").strip()
+    if not to or not messaging.get(switch, True):
+        return
+    with transaction() as conn:
+        notifications.queue(
+            conn, business, kind=kind, to=to, body=body, dedupe_key=message_key(task)
+        )
 
 
 # --- scheduling the recurring ones -------------------------------------------

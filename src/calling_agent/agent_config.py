@@ -98,7 +98,7 @@ CHANGING OR CANCELLING
 Before you cancel anything, ask for the name the booking is under and check it
 matches. The reference is not proof of anything -- it gets read aloud and
 printed in a text.
-{menu_block}
+{menu_block}{venue_block}
 ALLERGIES AND DIET
 Take these seriously; getting one wrong could hurt someone.
 - Say what something contains, not what it is free of, unless you checked.
@@ -206,9 +206,48 @@ def build_prompt_for(business: Business) -> str:
         unit_plural=business.unit_plural,
         currency_line=f"Prices are in {locale['currency_name']}.",
         menu_block=MENU_BLOCK if business.config["features"].get("menu") else "",
+        venue_block=venue_block_for(business),
         languages_line=languages_line,
         never_say_block=never_say_block,
         extra_instructions=f"\n{extra}\n" if extra else "",
+    )
+
+
+#: The label a caller would use, per venue field. Order is the order they get
+#: asked, roughly: what is the food, how do I get there, can I park, then the
+#: things people check before they bring someone.
+VENUE_LABELS = (
+    ("cuisine", "The food"),
+    ("getting_there", "Getting there"),
+    ("parking", "Parking"),
+    ("wheelchair_access", "Wheelchair access"),
+    ("children", "Children"),
+    ("dress_code", "Dress code"),
+    ("private_room", "Private room"),
+)
+
+
+def venue_block_for(business: Business) -> str:
+    """The venue facts the owner has filled in, or nothing at all.
+
+    Only what is set. An empty field is not "no" -- a venue that left parking
+    blank may have plenty -- so it is left out and the standing rule applies:
+    anything you do not know, offer to check. Listing "Parking: (not set)"
+    would teach the agent to say "I don't think we have parking".
+    """
+    venue = business.config.get("venue") or {}
+    lines = [
+        f"- {label}: {venue[key].strip()}"
+        for key, label in VENUE_LABELS
+        if (venue.get(key) or "").strip()
+    ]
+    if not lines:
+        return ""
+    return (
+        "\nABOUT THE PLACE\n"
+        "Answer these from here, in your own words. Anything not listed, you do\n"
+        "not know: offer to check and call back rather than guess.\n"
+        + "\n".join(lines) + "\n"
     )
 
 
