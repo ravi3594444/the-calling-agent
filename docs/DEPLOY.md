@@ -31,7 +31,7 @@ gcloud config set project YOUR_PROJECT
 ```
 
 This reserves a static IP, opens only `:80` and `:443`, and creates a Debian 12
-`e2-small` in `asia-south1-a` with Docker pre-installed. It prints the IP when
+`e2-medium` in `asia-south1-a` with Docker pre-installed. It prints the IP when
 it finishes.
 
 Defaults are overridable:
@@ -42,12 +42,23 @@ ZONE=us-east1-b REGION=us-east1 MACHINE=e2-medium ./infra/gcp-setup.sh
 
 ### On sizing
 
-The server is a byte relay between two WebSockets — no transcoding, no local
-inference. `e2-small` (2 vCPU / 2 GB, ~$13/mo) is ample for the browser path.
+The relay is cheap: no transcoding, no local inference, all the speech work
+happens upstream. **Postgres is what needs the memory** — it now runs on the
+same box and holds the only copy of every booking.
 
-Note that `e2-small` and `e2-medium` are **shared-core** machines with burstable
-CPU. That is fine for development and light use; if you later put sustained
-concurrent traffic through it, move to `e2-standard-2` for dedicated cores.
+| Machine | RAM | ~$/mo | Verdict |
+|---|---|---|---|
+| `e2-small` | 2 GB | ~13 | Runs, but tight. A `docker compose build` is the first thing to be OOM-killed. |
+| `e2-medium` | 4 GB | ~27 | **Default.** Room for Postgres, its page cache and a build. |
+| `e2-standard-2` | 8 GB | ~55 | Dedicated cores. For sustained concurrent traffic. |
+
+`e2-small` and `e2-medium` are **shared-core** machines with burstable CPU,
+which is fine for a first restaurant. Move to `e2-standard-2` when calls
+overlap regularly.
+
+Note the free-tier `e2-micro` is not a candidate: 1 GB will not hold Postgres
+and the app, and the free-tier regions are all in the US, which adds a
+transatlantic hop to every tool call on an Indian phone line.
 
 ### On region
 
