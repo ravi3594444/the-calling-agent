@@ -7,6 +7,8 @@ food is theirs and the agent must never answer from somebody else's card.
 
 from __future__ import annotations
 
+import pytest
+
 from calling_agent import menu
 from calling_agent.db import transaction
 from tests.conftest import make_business
@@ -157,3 +159,55 @@ def test_one_venue_never_sees_another_venue_s_menu():
 def test_every_declared_menu_tool_has_an_implementation():
     declared = {tool["name"] for tool in menu.TOOLS}
     assert declared == set(menu.IMPLEMENTATIONS)
+
+
+# --- the reader boundary -----------------------------------------------------
+
+
+def test_model_output_that_is_not_a_dish_never_becomes_one():
+    """Everything here is model output, so none of it is trusted.
+
+    A name that came back as a number, a price as "£12", tags as a bare
+    string: all of it has to stop at this boundary rather than reach a review
+    screen looking like a real dish.
+    """
+    from calling_agent import menu_reader
+
+    assert menu_reader._clean("not a dict") is None
+    assert menu_reader._clean({"name": "   "}) is None
+    assert menu_reader._clean({"price": 12}) is None
+
+    priced = menu_reader._clean({"name": "Dal", "price": "£12"})
+    assert priced.price is None, "a currency symbol is not a price"
+
+    absurd = menu_reader._clean({"name": "Dal", "price": 10**9})
+    assert absurd.price is None, "a price nobody charges is a misread decimal"
+
+    tagged = menu_reader._clean({"name": "Dal", "tags": "nuts"})
+    assert tagged.tags == ["nuts"], "one tag is still a list"
+
+    trimmed = menu_reader._clean({"name": "x" * 500, "description": "y" * 900})
+    assert len(trimmed.name) == 200
+    assert len(trimmed.description) == 500
+
+
+def test_the_reader_is_told_to_copy_allergens_and_never_infer_them():
+    """The one instruction in this product that can hurt somebody."""
+    from calling_agent import menu_reader
+
+    instructions = " ".join(menu_reader.INSTRUCTIONS.split())
+    assert "Never work out an allergen" in instructions
+    assert "Copy. Do not infer" in instructions
+
+
+def test_an_unreadable_upload_is_refused_rather_than_guessed():
+    from calling_agent import menu_reader
+    from calling_agent.config import settings
+
+    original = settings.menu_reader
+    settings.menu_reader = ""
+    try:
+        with pytest.raises(menu_reader.MenuReadError, match="No menu reader"):
+            menu_reader.read(None, b"x", "image/png")
+    finally:
+        settings.menu_reader = original

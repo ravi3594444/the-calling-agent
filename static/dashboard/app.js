@@ -82,6 +82,10 @@ const api = {
   updateGuest  : (id, patch)         => request(`/api/guests/${id}`, {method:"PATCH", body:patch}),
   menu         : ()                  => request("/api/menu"),
   addDish      : body                => request("/api/menu", {method:"POST", body}),
+  readMenu     : id                  => request(`/api/menu/upload/${id}/read`,
+                                          {method:"POST"}),
+  addDishes    : dishes              => request("/api/menu/bulk",
+                                          {method:"POST", body:{dishes}}),
   uploadMenu   : file                => {
                                           const form=new FormData();
                                           form.append("file", file);
@@ -842,6 +846,9 @@ async function loadMenu(){
           <td class="r"><span class="sw ${item.available?"on":""}" data-avail="${item.id}"></span></td>
         </tr>`).join("")
       : `<tr><td colspan="4" class="empty">Nothing on the menu yet. Add a dish and the agent can answer about it.</td></tr>`;
+    window.__upload = payload.upload;
+    document.getElementById("menuRead").hidden =
+      !(payload.upload && payload.reader_configured);
     drawMenuShot(payload.upload);
   }catch(e){
     body.innerHTML=`<tr><td colspan="4" class="empty">Couldn't load the menu.</td></tr>`;
@@ -884,7 +891,7 @@ async function drawMenuShot(upload){
     button.classList.add("busy");
     button.disabled=true;
     try{
-      await api.uploadMenu(file);
+      await api.uploadMenu(await shrink(file));
       await loadMenu();
     }catch(err){
       alert(err.detail || "That upload didn't go through. Nothing has been changed.");
@@ -1620,5 +1627,120 @@ document.getElementById("exportGuests").addEventListener("click", () => {
   link.click();
   URL.revokeObjectURL(url);
 });
+
+/* ---------------- reading a photographed menu ---------------- */
+/* The reader PROPOSES. Every dish lands in an editable row and nothing
+   reaches the menu until "Add these" is pressed, because the agent reads
+   these out to callers and a mis-read allergen is the one mistake here that
+   hurts somebody. */
+
+let proposed = [];
+
+function drawReview(){
+  const host = document.getElementById("menuReview");
+  if(!proposed.length){ host.innerHTML = ""; return; }
+
+  host.innerHTML = `
+    <div class="prop head"><div>Dish</div><div class="col-hide">Price</div>
+      <div class="col-hide">Section</div><div></div></div>
+    ${proposed.map((d,i)=>`<div class="prop" data-i="${i}">
+      <input data-k="name" value="${esc(d.name)}" aria-label="Dish name">
+      <input data-k="price" class="col-hide" type="number" step="0.01" inputmode="decimal"
+        value="${d.price ?? ""}" aria-label="Price">
+      <input data-k="section" class="col-hide" value="${esc(d.section||"")}" aria-label="Section">
+      <button class="btn no" data-drop="${i}" aria-label="Remove ${esc(d.name)}">Remove</button>
+    </div>`).join("")}
+    <div class="acts" style="margin-top:14px">
+      <button class="btn key" id="menuKeep">Add these ${proposed.length} dishes</button>
+      <button class="btn" id="menuDrop">Discard</button>
+    </div>
+    <p style="font-size:13px;color:var(--ink-3);margin-top:10px">
+      Read them before you add them. Anything here is what the agent will say out loud.
+      Allergy tags are only copied when the menu prints them — check them against the kitchen.
+    </p>`;
+}
+
+document.getElementById("menuReview").addEventListener("input", e=>{
+  const input = e.target.closest("input[data-k]");
+  if(!input) return;
+  const index = +input.closest(".prop").dataset.i;
+  const key = input.dataset.k;
+  proposed[index][key] = key === "price"
+    ? (input.value === "" ? null : Number(input.value))
+    : input.value;
+});
+
+document.getElementById("menuReview").addEventListener("click", async e=>{
+  const drop = e.target.closest("button[data-drop]");
+  if(drop){
+    proposed.splice(+drop.dataset.drop, 1);
+    drawReview();
+    return;
+  }
+  if(e.target.id === "menuDrop"){ proposed = []; drawReview(); return; }
+
+  const keep = e.target.closest("#menuKeep");
+  if(!keep || keep.dataset.busy) return;
+  keep.dataset.busy = "1";
+  keep.classList.add("busy");
+  try{
+    await api.addDishes(proposed.filter(d => (d.name||"").trim()));
+    proposed = [];
+    drawReview();
+    await loadMenu();
+  }catch(err){
+    alert(err.detail || "Those didn't save. Nothing has been changed.");
+  }finally{
+    delete keep.dataset.busy;
+    keep.classList.remove("busy");
+  }
+});
+
+document.getElementById("menuRead").addEventListener("click", async e=>{
+  const button = e.target;
+  if(!window.__upload || button.dataset.busy) return;
+  button.dataset.busy = "1";
+  button.classList.add("busy");
+  try{
+    const payload = await api.readMenu(window.__upload.id);
+    proposed = payload.dishes;
+    drawReview();
+    if(!proposed.length) alert("Nothing readable came off that one.");
+  }catch(err){
+    alert(err.detail || "The reader couldn't be reached. Nothing has been changed.");
+  }finally{
+    delete button.dataset.busy;
+    button.classList.remove("busy");
+  }
+});
+
+/* A phone photo is several megabytes and more pixels than any reader uses:
+   past about 1568px on the long edge it is downsampled at the other end
+   anyway. Shrinking here cuts the upload, the wait and the bill at once.
+   A format the browser cannot decode -- HEIC on a desktop -- falls through
+   and is uploaded as it came. */
+const MAX_EDGE = 1568;
+
+async function shrink(file){
+  if(!file.type.startsWith("image/")) return file;
+  try{
+    const bitmap = await createImageBitmap(file);
+    const scale = MAX_EDGE / Math.max(bitmap.width, bitmap.height);
+    if(scale >= 1 && file.size < 4_000_000) return file;
+
+    const width = Math.round(bitmap.width * Math.min(scale, 1));
+    const height = Math.round(bitmap.height * Math.min(scale, 1));
+    const canvas = document.createElement("canvas");
+    canvas.width = width; canvas.height = height;
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, width, height);
+    bitmap.close?.();
+
+    const blob = await new Promise(done => canvas.toBlob(done, "image/jpeg", 0.85));
+    if(!blob || blob.size >= file.size) return file;
+    return new File([blob], "menu.jpg", { type:"image/jpeg" });
+  }catch(e){
+    return file;                      // a photo we cannot shrink is still a photo
+  }
+}
 
 start();

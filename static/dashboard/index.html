@@ -324,6 +324,16 @@ dialog.sheet .sheet-acts{display:flex;gap:10px;justify-content:flex-end;
   padding:14px 22px;border-top:1px solid var(--line)}
 dialog.sheet .sheet-err{color:var(--bad,#b4331f);font-size:14px;margin-top:12px;display:none}
 dialog.sheet .sheet-err.on{display:block}
+#menuReview{margin-top:16px}
+#menuReview .prop{display:grid;grid-template-columns:1fr 92px 120px auto;gap:8px;
+  align-items:center;padding:8px 0;border-top:1px solid var(--line)}
+#menuReview .prop input{padding:8px 10px;border:1px solid var(--line);border-radius:7px;
+  font:inherit;background:var(--card);color:var(--ink);width:100%}
+#menuReview .head{font-size:13px;color:var(--ink-3);font-weight:600;border-top:0}
+@media (max-width:640px){
+  #menuReview .prop{grid-template-columns:1fr auto}
+  #menuReview .prop .col-hide{display:none}
+}
 @media (max-width:560px){
   dialog.sheet{width:calc(100vw - 20px)}
   dialog.sheet .sheet-acts{flex-direction:column-reverse}
@@ -558,6 +568,8 @@ dialog.sheet .sheet-err.on{display:block}
         <button class="btn" id="menuPhoto">Upload a photo of the menu</button><input type="file" id="menuFile" accept="image/*,application/pdf" hidden>
       </div>
       <p style="font-size:13px;color:var(--ink-3);margin-top:11px">A photo or PDF is kept here so you can read it while you type the dishes in. Nothing is read off it automatically — a half-read menu puts food on the agent's lips the kitchen never made.</p>
+      <div class="acts" style="margin-top:12px"><button class="btn key" id="menuRead" hidden>Read the dishes off it</button></div>
+      <div id="menuReview"></div>
       <div id="menuShot"></div>
     </div>
   </section>

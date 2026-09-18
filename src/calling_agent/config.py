@@ -105,6 +105,17 @@ class Settings(BaseSettings):
     # sms provider: "twilio" sends, "log" records the message and sends nothing.
     sms_provider: str = Field(default="log", alias="SMS_PROVIDER")
 
+    # --- Reading a photographed menu (PRD §14) --------------------------
+    # Empty means no reader: the dashboard hides the button rather than
+    # offering one that fails. Nothing a reader proposes is ever saved
+    # without the owner confirming it -- see menu_reader.
+    menu_reader: str = Field(default="", alias="MENU_READER")
+    menu_reader_model: str = Field(default="", alias="MENU_READER_MODEL")
+    menu_reader_timeout: float = Field(default=90.0, alias="MENU_READER_TIMEOUT")
+    gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
+    anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
+    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+
     host: str = Field(default="0.0.0.0", alias="HOST")
     port: int = Field(default=8080, alias="PORT")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")

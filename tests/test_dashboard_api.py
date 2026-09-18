@@ -214,3 +214,83 @@ def test_guests_carry_what_the_csv_export_writes(dash, business):
     assert guests, "a booking with a number should make a guest"
     for key in ("name", "phone", "visits", "no_shows", "last", "do_not_call"):
         assert key in guests[0], f"Export CSV writes {key}"
+
+
+# --- reading the menu off a photo --------------------------------------------
+
+
+def test_the_read_button_is_hidden_until_a_reader_is_set_up(dash, business, monkeypatch):
+    from calling_agent.config import settings
+
+    monkeypatch.setattr(settings, "menu_reader", "")
+    assert dash.get("/api/menu").json()["reader_configured"] is False
+
+    monkeypatch.setattr(settings, "menu_reader", "gemini")
+    assert dash.get("/api/menu").json()["reader_configured"] is True
+
+
+def test_reading_a_menu_saves_nothing(dash, business, monkeypatch):
+    """The whole point of the review step, pinned.
+
+    A reader that wrote straight to menu_items would put dishes in the
+    agent's mouth that nobody checked -- including allergy tags.
+    """
+    from calling_agent import menu_reader
+    from calling_agent.config import settings
+
+    monkeypatch.setattr(settings, "menu_reader", "fake")
+    monkeypatch.setitem(
+        menu_reader.PROVIDERS, "fake",
+        lambda blob, content_type, business: [
+            {"name": "Butter Chicken", "price": 420, "section": "Mains", "tags": ["nuts"]},
+            {"name": "Dal Makhani", "price": "not a number"},
+        ],
+    )
+
+    uploaded = dash.post("/api/menu/upload",
+                         files={"file": ("menu.png", PNG, "image/png")}).json()["id"]
+    response = dash.post(f"/api/menu/upload/{uploaded}/read")
+    assert response.status_code == 200, response.text
+
+    body = response.json()
+    assert body["saved"] is False
+    assert [d["name"] for d in body["dishes"]] == ["Butter Chicken", "Dal Makhani"]
+    assert body["dishes"][1]["price"] is None, "a price that is not a number is not a price"
+
+    assert dash.get("/api/menu").json()["items"] == [], "reading must not write"
+
+
+def test_only_the_confirmed_dishes_are_written(dash, business):
+    """What the owner corrected, not what the reader said."""
+    response = dash.post("/api/menu/bulk", json={"dishes": [
+        {"name": "Butter Chicken", "price": 380, "section": "Mains", "tags": ["dairy"]},
+        {"name": "  ", "price": 1},
+        {"name": "Dal Makhani", "price": 260},
+    ]})
+    assert response.status_code == 200, response.text
+    assert response.json()["added"] == 2, "the blank row is not a dish"
+
+    names = {item["name"] for item in dash.get("/api/menu").json()["items"]}
+    assert names == {"Butter Chicken", "Dal Makhani"}
+
+
+def test_confirming_nothing_is_refused(dash, business):
+    assert dash.post("/api/menu/bulk", json={"dishes": []}).status_code == 400
+    assert dash.post("/api/menu/bulk", json={"dishes": [{"name": ""}]}).status_code == 400
+
+
+def test_a_reader_that_fails_says_so_without_leaking_the_body(dash, business, monkeypatch):
+    from calling_agent import menu_reader
+    from calling_agent.config import settings
+
+    def explode(blob, content_type, business):
+        raise menu_reader.MenuReadError("The reader rejected the API key on the server.")
+
+    monkeypatch.setattr(settings, "menu_reader", "fake")
+    monkeypatch.setitem(menu_reader.PROVIDERS, "fake", explode)
+
+    uploaded = dash.post("/api/menu/upload",
+                         files={"file": ("menu.png", PNG, "image/png")}).json()["id"]
+    response = dash.post(f"/api/menu/upload/{uploaded}/read")
+    assert response.status_code == 502
+    assert "API key" in response.json()["detail"]

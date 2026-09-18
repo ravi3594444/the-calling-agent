@@ -27,6 +27,7 @@ from .. import (
     businesses,
     formatting,
     holidays,
+    menu_reader,
     notifications,
     tokens,
 )
@@ -620,6 +621,87 @@ def read_menu_upload(
     return Response(content=bytes(row.bytes), media_type=row.content_type)
 
 
+@router.post("/menu/upload/{upload_id}/read")
+def read_menu_upload_text(
+    upload_id: str,
+    business: Business = Depends(current_business),
+) -> dict[str, Any]:
+    """Propose the dishes printed on an upload. Saves NOTHING.
+
+    The owner gets a list to correct, and only what they confirm is written
+    (see POST /menu/bulk). Auto-saving would put dishes in the agent's mouth
+    that nobody checked, and a mis-read allergen is the one mistake in this
+    product that hurts somebody.
+    """
+    try:
+        parsed = UUID(upload_id)
+    except ValueError as exc:
+        raise HTTPException(404, "No such upload.") from exc
+
+    with readonly() as conn:
+        row = fetch_one(
+            conn,
+            "SELECT content_type, bytes FROM menu_uploads WHERE id = :i AND business_id = :b",
+            i=str(parsed),
+            b=str(business.id),
+        )
+    if row is None:
+        raise HTTPException(404, "No such upload.")
+
+    try:
+        proposed = menu_reader.read(business, bytes(row.bytes), row.content_type)
+    except menu_reader.MenuReadError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    return {"dishes": [dish.as_dict() for dish in proposed], "saved": False}
+
+
+@router.post("/menu/bulk")
+def add_menu_items(
+    body: dict[str, Any] = Body(...),
+    business: Business = Depends(current_business),
+) -> dict[str, Any]:
+    """Write the dishes the owner confirmed, in one go.
+
+    Takes what the review screen sends, not what the reader returned: the two
+    differ by every correction, which is the entire point of the step.
+    """
+    items = body.get("dishes")
+    if not isinstance(items, list) or not items:
+        raise HTTPException(400, "Nothing to add.")
+    if len(items) > 500:
+        raise HTTPException(400, "That is more dishes than one menu holds.")
+
+    rows = [
+        {
+            "name": str(item.get("name", "")).strip(),
+            "section": str(item.get("section", "") or ""),
+            "price": item.get("price"),
+            "description": str(item.get("description", "") or ""),
+            "tags": [str(t) for t in (item.get("tags") or [])],
+        }
+        for item in items
+        if isinstance(item, dict) and str(item.get("name", "")).strip()
+    ]
+    if not rows:
+        raise HTTPException(400, "Every dish needs a name.")
+
+    # One transaction: half a menu is worse than none, because the owner
+    # cannot tell which half is missing without reading the whole thing.
+    with transaction() as conn:
+        for row in rows:
+            conn.execute(
+                text(
+                    "INSERT INTO menu_items (business_id, name, section, price,"
+                    " description, tags)"
+                    " VALUES (:b, :name, :section, :price, :description, :tags)"
+                ),
+                {"b": str(business.id), **row},
+            )
+    log.info("added %d menu items for %s", len(rows), business.slug)
+    return {"ok": True, "added": len(rows)}
+
+
 @router.get("/menu")
 def read_menu(business: Business = Depends(current_business)) -> dict[str, Any]:
     with readonly() as conn:
@@ -642,6 +724,7 @@ def read_menu(business: Business = Depends(current_business)) -> dict[str, Any]:
             {"id": str(latest.id), "content_type": latest.content_type}
             if latest is not None else None
         ),
+        "reader_configured": menu_reader.configured(),
         "items": [
             {
                 "id": str(r.id),
