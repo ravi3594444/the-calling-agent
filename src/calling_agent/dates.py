@@ -14,6 +14,7 @@ day that does not exist.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime, time
 from functools import lru_cache
 
@@ -84,10 +85,37 @@ def iso_codes(language_names: tuple[str, ...] | list[str]) -> list[str]:
     return [code for name in language_names if (code := iso_code(name))]
 
 
+#: A time that is nothing but an hour: "7", "11". Ambiguous by itself.
+_BARE_HOUR = re.compile(r"^\s*(\d{1,2})\s*$")
+
+
+def bare_hour(phrase: str) -> int | None:
+    """The hour in "7", or None if the phrase says more than that.
+
+    Exists because the parsers get this exactly wrong. dateparser reads "7" as
+    the SEVENTH OF THE MONTH and hands back midnight, so a caller asking for
+    seven o'clock was told their booking was in the past. Silently answering
+    midnight is the worst possible reading: it is never what anyone meant, and
+    it fails with a message about the wrong thing.
+
+    A bare hour needs context to resolve -- opening hours do it well, and only
+    the caller knows the rest -- so it is reported rather than guessed.
+    """
+    match = _BARE_HOUR.match(phrase or "")
+    if match is None:
+        return None
+    hour = int(match.group(1))
+    return hour if 0 <= hour <= 23 else None
+
+
 def resolve_time(phrase: str) -> time | None:
-    """"half seven", "7pm", "19:30" -> a time, or None."""
+    """"half seven", "7pm", "19:30" -> a time, or None.
+
+    None for a bare hour: see `bare_hour`. The caller resolves those with
+    something this module cannot know, like when the venue is open.
+    """
     phrase = (phrase or "").strip()
-    if not phrase:
+    if not phrase or bare_hour(phrase) is not None:
         return None
 
     parsed = dateparser.parse(phrase)
@@ -109,9 +137,17 @@ def parse_iso_date(value: str) -> date | None:
 
 
 def parse_iso_time(value: str) -> time | None:
-    """Accepts "19:30" and "19:30:00". Anything else is a caller's typo."""
+    """Accepts "19:30" and "19:30:00", and deliberately NOT "19".
+
+    Python 3.11 widened `time.fromisoformat` to accept an hour on its own, so
+    "11" parses as 11:00 and looks like a definite answer. It is not one: a
+    caller saying "eleven" means one of two times, and taking the literal
+    reading books the morning for someone who wanted the evening. Requiring a
+    colon sends bare hours down the path that resolves them against opening
+    hours instead.
+    """
     raw = (value or "").strip()
-    if not raw:
+    if not raw or ":" not in raw:
         return None
     try:
         return time.fromisoformat(raw)

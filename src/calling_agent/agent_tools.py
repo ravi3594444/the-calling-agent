@@ -17,8 +17,9 @@ only ever handled strings, needs no change.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
+from uuid import UUID
 
 from . import availability, bookings, dates, formatting, holds, menu
 from .agent_spec import AgentDefinition
@@ -27,6 +28,19 @@ from .db import readonly
 from .records import Booking
 
 log = logging.getLogger(__name__)
+
+
+#: What a crashed tool tells the agent.
+#:
+#: Never the exception text. A psycopg error carries the failing SQL, the
+#: column names and the tenant's own uuid, and whatever a tool returns is put
+#: in front of the model -- which then paraphrases it to the caller. One bad
+#: hold id printed a stack trace into a live conversation. The detail belongs
+#: in the log, where it is just as useful and nobody is listening.
+TOOL_FAILED = (
+    "That did not go through on my side. Apologise, and either try once more "
+    "or offer to take a number and call back. Do not invent a result."
+)
 
 
 class Spoken(str):
@@ -196,6 +210,19 @@ def confirm(business: Business, args: dict[str, Any]) -> Spoken:
         return Spoken(
             "I need the hold before I can confirm it.",
             error=True, ok=False, reason="hold_missing",
+        )
+    if not _is_uuid(hold_id):
+        # A model that never called hold() will invent something that looks
+        # like an id -- "hold_12345" -- and confirm with it. Checked here
+        # rather than in the query, because handing that to Postgres raises
+        # an InvalidTextRepresentation whose text names the table, the SQL and
+        # the tenant's own uuid, and that text goes straight into the
+        # conversation. The answer has to tell the agent what to DO instead.
+        log.warning("confirm called with a fabricated hold id %r", hold_id[:40])
+        return Spoken(
+            "I do not have that table held. Let me take the time again before "
+            "I confirm it.",
+            error=True, ok=False, reason="hold_not_found",
         )
     if not name:
         return Spoken(
@@ -386,9 +413,13 @@ def _when(business: Business, args: dict[str, Any]) -> tuple[datetime | None, Sp
             error=True, ok=False, reason="date_unclear",
         )
 
-    at = dates.parse_iso_time(str(args.get("time", "")))
+    raw_time = str(args.get("time", ""))
+    at = dates.parse_iso_time(raw_time) or dates.resolve_time(raw_time)
     if at is None:
-        at = dates.resolve_time(str(args.get("time", "")))
+        # A bare "7" means seven in the evening at a restaurant that opens at
+        # noon, and seven in the morning at a garage. Opening hours settle it,
+        # which is exactly how a person behind the counter would read it.
+        at = _hour_within_opening(business, day, dates.bare_hour(raw_time))
     if at is None:
         return None, Spoken(
             "I did not catch the time. What time suits you?",
@@ -396,6 +427,38 @@ def _when(business: Business, args: dict[str, Any]) -> tuple[datetime | None, Sp
         )
 
     return datetime.combine(day, at, tzinfo=business.tz).astimezone(UTC), None
+
+
+def _hour_within_opening(business: Business, day: date, hour: int | None) -> time | None:
+    """Read a bare hour as whichever of its two meanings the venue is open for.
+
+    "7" is 07:00 or 19:00. If the venue is open for exactly one of them, that
+    is the one the caller meant. If it is open for both, or neither, this
+    returns None and the agent asks -- guessing wrong books somebody twelve
+    hours out, which nobody notices until the day.
+    """
+    if hour is None:
+        return None
+
+    candidates = [time(hour)]
+    if hour < 12:
+        candidates.append(time(hour + 12))
+
+    services = availability.services_on(business, day)
+    if not services:
+        return None
+
+    open_now = [
+        candidate
+        for candidate in candidates
+        if any(
+            service.starts_at
+            <= datetime.combine(day, candidate, tzinfo=business.tz).astimezone(UTC)
+            < service.ends_at
+            for service in services
+        )
+    ]
+    return open_now[0] if len(open_now) == 1 else None
 
 
 def _units(business: Business, args: dict[str, Any]) -> tuple[int, Spoken | None]:
@@ -419,6 +482,14 @@ def _units(business: Business, args: dict[str, Any]) -> tuple[int, Spoken | None
             max=largest,
         )
     return units, None
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        UUID(value)
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return True
 
 
 def _units_unclear(business: Business) -> Spoken:
@@ -675,17 +746,17 @@ def run_tool_for(
     if implementation is not None:
         try:
             return implementation(business, {**args, "call_id": call_id}), False
-        except Exception as exc:  # noqa: BLE001 - reported to the agent, not the caller
+        except Exception:  # noqa: BLE001 - reported to the agent, not the caller
             log.exception("tool %s failed for %s", name, business.slug)
-            return f"Something went wrong looking that up: {exc}", True
+            return TOOL_FAILED, True
 
     menu_implementation = menu.IMPLEMENTATIONS.get(name)
     if menu_implementation is not None:
         try:
             return menu_implementation(business, args), False
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             log.exception("menu tool %s failed", name)
-            return f"Something went wrong looking that up: {exc}", True
+            return TOOL_FAILED, True
 
     return f"No tool named {name}.", True
 

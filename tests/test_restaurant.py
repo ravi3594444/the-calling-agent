@@ -296,3 +296,85 @@ def test_no_business_id_is_ever_special_cased():
         if re.search(r"business(_id)?\s*==\s*['\"0-9]", path.read_text())
     ]
     assert not offenders, f"a business is special-cased in {offenders}"
+
+
+# --- bugs found on the first real conversation -------------------------------
+#
+# All three came out of one live call. None was reachable from a test that fed
+# the tools well-formed arguments, because the problem in every case was what a
+# language model sends when it is improvising.
+
+
+def test_a_bare_hour_is_read_as_the_time_the_venue_is_open(business):
+    """A caller saying "seven" means seven in the evening at a restaurant.
+
+    dateparser reads "7" as the SEVENTH OF THE MONTH and returns midnight, so
+    a booking for tonight was refused with "that is in the past" -- a true
+    sentence about a time nobody asked for.
+    """
+    at = future_slot(business, hour=19)
+    local_day = at.astimezone(business.tz).date().isoformat()
+
+    out = agent_tools.check_availability(business, {"date": local_day, "time": "7", "units": 2})
+
+    assert out.data["ok"], f"a bare hour was not understood: {out}"
+    assert "7:00 PM" in out
+
+
+def test_a_two_digit_bare_hour_does_not_slip_through_as_iso(business):
+    """Python 3.11 made `time.fromisoformat("11")` valid, which looks decisive.
+
+    It is not: "eleven" is two different times, and taking the literal reading
+    books the morning for somebody who wanted the evening.
+    """
+    at = future_slot(business)
+    local_day = at.astimezone(business.tz).date().isoformat()
+
+    # The fixture venue opens 12:00-22:00, so neither 11:00 nor 23:00 works
+    # and the only honest answer is to ask.
+    out = agent_tools.check_availability(business, {"date": local_day, "time": "11", "units": 2})
+
+    assert out.data["reason"] == "time_unclear"
+    assert "what time" in str(out).lower()
+
+
+def test_an_unambiguous_time_is_never_second_guessed(business):
+    at = future_slot(business)
+    local_day = at.astimezone(business.tz).date().isoformat()
+
+    for spoken in ("19:30", "7:30 PM"):
+        out = agent_tools.check_availability(
+            business, {"date": local_day, "time": spoken, "units": 2}
+        )
+        assert out.data["ok"], f"{spoken!r} was not understood: {out}"
+
+
+def test_a_fabricated_hold_id_is_refused_without_leaking_the_database(business):
+    """A model that never called hold() invents one that looks like an id.
+
+    Passing "hold_12345" to Postgres raises InvalidTextRepresentation, and the
+    message names the table, the SQL and the tenant's own uuid. Whatever a tool
+    returns goes in front of the model, which paraphrases it to the caller --
+    so one bad id put a stack trace into a live conversation.
+    """
+    out = agent_tools.confirm(business, {"hold_id": "hold_12345", "name": "Ravi"})
+
+    assert out.data["error"]
+    assert out.data["reason"] == "hold_not_found"
+    for leak in ("psycopg", "SELECT", "uuid", str(business.id), "holds"):
+        assert leak not in str(out), f"the answer leaked {leak!r}"
+    # And it must tell the agent what to do instead of just what went wrong.
+    assert "take the time again" in str(out).lower()
+
+
+def test_a_crashed_tool_never_reports_the_exception_text(business, monkeypatch):
+    """The log is where a stack trace is useful. A phone call is not."""
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("connection to server at 10.1.2.3 failed: password authentication")
+
+    monkeypatch.setitem(agent_tools.IMPLEMENTATIONS, "check_availability", explode)
+    spoken, is_error = agent_tools.run_tool_for(business, "check_availability", {})
+
+    assert is_error
+    assert "10.1.2.3" not in spoken and "password" not in spoken
+    assert "do not invent" in spoken.lower()

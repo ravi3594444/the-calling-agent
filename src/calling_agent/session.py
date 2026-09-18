@@ -27,8 +27,23 @@ from .transport.base import AudioTransport
 
 log = logging.getLogger(__name__)
 
-# How long to wait for reply.done before sending queued tool results anyway.
-TOOL_RESULT_TIMEOUT = 2.0
+# A STUCK-SESSION guard, not part of the normal path.
+#
+# The API's rule is: send tool.result when reply.done is the latest event you
+# have received -- "not earlier (agent is still mid-transition-phrase), not
+# later (a new turn has started)". So the only correct trigger is reply.done.
+#
+# This used to be 2 seconds, which made it a normal path by accident: an agent
+# that answers "Right, five people on Monday the twenty-first -- did you have a
+# time in mind?" streams that reply for longer than two seconds, so reply.done
+# arrived AFTER the timeout had already sent the results mid-phrase. That is
+# precisely the case the rule warns about, and it cost a visible pause on every
+# turn that used a tool.
+#
+# Fifteen seconds is longer than any reply the model produces, so this now
+# fires only when reply.done genuinely never comes -- which would otherwise
+# strand the call in silence forever.
+TOOL_RESULT_TIMEOUT = 15.0
 
 
 class AgentSession:
@@ -67,7 +82,15 @@ class AgentSession:
         # is not acted on, so the agent says "let me check" and then goes quiet
         # until the caller prompts it again.
         self._pending_tool_results: list[dict] = []
-        self._reply_active = False
+        # The last lifecycle event upstream sent. Tool results may only be
+        # released when this is reply.done (see TOOL_RESULT_TIMEOUT). A single
+        # field rather than a set of booleans, because the rule is about which
+        # event was MOST RECENT, and booleans cannot express that.
+        self._last_event: str | None = None
+        # Set when a reply ends interrupted. Tools run in a worker, so one can
+        # still be in flight when the caller cuts in -- clearing the queue at
+        # that moment misses the result that lands a moment later.
+        self._abandoned_turn = False
         self._flush_guard: asyncio.Task | None = None
         # One ordered worker owns tool execution. Awaiting a threaded tool in
         # the audio reader still blocks that reader; a separate queue does not.
@@ -206,7 +229,8 @@ class AgentSession:
             await asyncio.gather(*tasks, return_exceptions=True)
             self._flush_guard = None
             self._pending_tool_results.clear()
-            self._reply_active = False
+            self._last_event = None
+            self._abandoned_turn = False
             self._tool_queue = asyncio.Queue(maxsize=16)
 
         if report_close:
@@ -267,22 +291,45 @@ class AgentSession:
                 await self._transport.send_audio(audio)
             return
 
-        if kind == p.INPUT_SPEECH_STARTED and settings.allow_interruptions:
-            # Barge-in: the user cut in, so drop whatever is still queued for
-            # playback or the agent talks over them. Gated on the same setting
-            # that tells the API to allow interruptions -- otherwise disabling
-            # them upstream would still cut playback here.
-            self._suppress_audio = True
-            await self._transport.clear()
+        if kind == p.INPUT_SPEECH_STARTED:
+            # The caller started talking, so a new turn is under way and any
+            # queued tool result is now "later than reply.done" -- it must wait.
+            self._last_event = kind
+            if settings.allow_interruptions:
+                # Barge-in: drop whatever is still queued for playback or the
+                # agent talks over them. Gated on the same setting that tells
+                # the API to allow interruptions -- otherwise disabling them
+                # upstream would still cut playback here.
+                self._suppress_audio = True
+                await self._transport.clear()
 
         elif kind == p.REPLY_STARTED:
-            # A genuinely new turn; audio is wanted again.
+            # A genuinely new turn; audio is wanted again, and whatever the
+            # caller abandoned before is no longer relevant either way.
             self._suppress_audio = False
-            self._reply_active = True
+            self._last_event = kind
+            self._abandoned_turn = False
 
         elif kind == p.REPLY_DONE:
-            self._reply_active = False
-            await self._flush_tool_results(upstream)
+            self._last_event = kind
+            if msg.get("status") == "interrupted":
+                # The caller talked over the agent and moved on. Answering the
+                # question they abandoned is worse than not answering it, so
+                # the results are dropped rather than delivered late.
+                #
+                # Dropped, but NOT returned early: the page still has to be
+                # told the reply ended, or its transcript sits mid-turn
+                # forever waiting for an event that already happened.
+                if self._pending_tool_results:
+                    log.info(
+                        "discarding %d tool result(s) for an interrupted reply",
+                        len(self._pending_tool_results),
+                    )
+                    self._pending_tool_results.clear()
+                self._abandoned_turn = True
+                self._cancel_flush_guard()
+            else:
+                await self._flush_tool_results(upstream)
 
         elif kind == p.SESSION_READY:
             self._ready = True
@@ -358,9 +405,16 @@ class AgentSession:
                 "result": result,
                 "is_error": is_error,
             }
-            self._pending_tool_results.append(payload)
             if call_id:
                 self._tool_cache[call_id] = payload
+            if self._abandoned_turn:
+                # The caller cut in and moved on while this was running. The
+                # tool has already done whatever it does; what must not happen
+                # is the agent volunteering the answer to a question nobody is
+                # asking any more.
+                log.info("dropping %s result: the caller abandoned that turn", name)
+            else:
+                self._pending_tool_results.append(payload)
             # UI evidence comes from the executed tool, never a transcript guess.
             activity = {
                 "type": "tool.activity",
@@ -374,11 +428,11 @@ class AgentSession:
                 activity["receipt"] = receipt
             self._recorder.tool(name, args, str(result), is_error)
             # Flush ready results before announcing completion to the browser.
-            if not self._reply_active:
+            if self._can_flush():
                 await self._flush_tool_results(upstream)
             await self._transport.send_event(activity)
 
-        if not self._reply_active:
+        if self._can_flush():
             # No reply in progress to wait for -- send straight away, or the
             # result would sit here until some later turn happened to flush it.
             await self._flush_tool_results(upstream)
@@ -388,6 +442,21 @@ class AgentSession:
         # on a tool that has already run.
         if self._flush_guard is None or self._flush_guard.done():
             self._flush_guard = asyncio.create_task(self._flush_after_timeout(upstream))
+
+    def _can_flush(self) -> bool:
+        """Is reply.done the latest thing upstream said?
+
+        The one condition the API allows tool results to be sent under. Any
+        other latest event means the agent is mid-phrase or the caller has
+        started a new turn, and the result would be ignored either way.
+        """
+        return self._last_event == p.REPLY_DONE
+
+    def _cancel_flush_guard(self) -> None:
+        guard = self._flush_guard
+        if guard is not None and not guard.done() and guard is not asyncio.current_task():
+            guard.cancel()
+        self._flush_guard = None
 
     async def _flush_after_timeout(self, upstream: ClientConnection) -> None:
         await asyncio.sleep(TOOL_RESULT_TIMEOUT)

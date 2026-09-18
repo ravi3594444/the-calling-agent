@@ -123,7 +123,10 @@ async def test_slow_tool_does_not_block_audio_or_interruption(monkeypatch):
         assert not upstream.sent
         release.set()
         await asyncio.wait_for(agent._tool_queue.join(), 1)
-        assert upstream.sent[0]["result"] == "Tool completed"
+        # The caller started a new turn while the tool was running, so the
+        # result is held rather than sent: the API's rule is reply.done must
+        # be the LATEST event, and input.speech.started is now later than it.
+        assert not upstream.sent
         assert [
             event["status"] for event in transport.events if event["type"] == "tool.activity"
         ] == ["started", "completed"]
@@ -137,8 +140,8 @@ async def test_timeout_guard_can_await_send_without_cancelling_itself(monkeypatc
     monkeypatch.setattr(session_module, "TOOL_RESULT_TIMEOUT", 0.01)
     upstream = Upstream()
     agent = session_module.AgentSession(Transport())
-    agent._reply_active = True
-    await agent._handle_tool_call(upstream, {"name": "restaurant_info", "call_id": "guard-1"})
+    agent._last_event = "reply.started"
+    await agent._handle_tool_call(upstream, {"name": "business_info", "call_id": "guard-1"})
     await asyncio.wait_for(agent._flush_guard, 1)
     assert upstream.sent[0]["call_id"] == "guard-1"
 
@@ -151,6 +154,7 @@ async def test_duplicate_tool_call_executes_side_effect_once():
         return "Booked once", False
 
     agent = _agent_running(action)
+    agent._last_event = "reply.done"  # results may be released
     upstream = Upstream()
     message = {"name": "book_table", "call_id": "same-id", "arguments": {}}
     await agent._handle_tool_call(upstream, message)
