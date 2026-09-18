@@ -227,3 +227,24 @@ def test_a_reader_with_no_key_is_not_offered():
         assert menu_reader.configured() is True
     finally:
         settings.menu_reader, settings.gemini_api_key = original
+
+
+def test_the_readers_thinking_is_not_mistaken_for_its_answer():
+    """A thinking model puts reasoning in earlier parts and JSON in a later one.
+
+    Taking parts[0] parses the reasoning, which is not a menu.
+    """
+    from calling_agent import menu_reader
+
+    assert menu_reader._gemini_text({"candidates": [{"content": {"parts": [
+        {"text": "Let me look at the dosa section.", "thought": True},
+        {"text": '{"dishes": [{"name": "Rava Masala Dosa"}]}'},
+    ]}}]}) == '{"dishes": [{"name": "Rava Masala Dosa"}]}'
+
+    # Not every model flags its thinking. The answer is still the last part.
+    assert menu_reader._gemini_text({"candidates": [{"content": {"parts": [
+        {"text": "thinking"}, {"text": "answer"},
+    ]}}]}) == "answer"
+
+    with pytest.raises(menu_reader.MenuReadError, match="SAFETY"):
+        menu_reader._gemini_text({"promptFeedback": {"blockReason": "SAFETY"}})

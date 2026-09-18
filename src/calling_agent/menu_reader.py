@@ -145,9 +145,15 @@ def _dishes_from(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 @provider("gemini")
 def _gemini(blob: bytes, content_type: str, business: Business) -> list[dict[str, Any]]:
-    """Google's Interactions API. Reads photos and PDFs, including handwriting.
+    """Google's generateContent. Reads photos and PDFs, including handwriting.
 
-    `response_format` rather than function calling: Gemini constrains
+    WHY THIS ENDPOINT AND NOT /v1beta/interactions
+    Google runs two generations of this API at once. The newer Interactions
+    one is what the current docs lead with; this is the long-stable one, and
+    it is the one every key reaches. Written against the newer shape first,
+    the first real upload came back refused.
+
+    `responseSchema` rather than function calling: Gemini constrains
     generation to the schema itself, so there is no tool block to unwrap and
     no "Sure! Here is the menu:" to strip.
     """
@@ -156,33 +162,33 @@ def _gemini(blob: bytes, content_type: str, business: Business) -> list[dict[str
     if not settings.gemini_api_key:
         raise MenuReadError("GEMINI_API_KEY is not set on the server.")
 
+    model = settings.menu_reader_model or "gemini-3.7-flash"
     response = httpx.post(
-        "https://generativelanguage.googleapis.com/v1beta/interactions",
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         headers={
             "x-goog-api-key": settings.gemini_api_key,
             "Content-Type": "application/json",
         },
         json={
-            "model": settings.menu_reader_model or "gemini-3.7-flash",
-            "input": [
-                {
-                    "type": "document" if content_type == PDF_TYPE else "image",
-                    "data": base64.standard_b64encode(blob).decode(),
-                    "mime_type": content_type,
-                },
-                {"type": "text", "text": INSTRUCTIONS},
-            ],
-            "response_format": {
-                "type": "text",
-                "mime_type": "application/json",
-                "schema": SCHEMA,
+            "contents": [{
+                "parts": [
+                    {"text": INSTRUCTIONS},
+                    {"inline_data": {
+                        "mime_type": content_type,
+                        "data": base64.standard_b64encode(blob).decode(),
+                    }},
+                ],
+            }],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseSchema": SCHEMA,
             },
         },
         timeout=settings.menu_reader_timeout,
     )
     _raise_for_provider(response)
 
-    text = _last_text(response.json())
+    text = _gemini_text(response.json())
     try:
         return _dishes_from(json.loads(text))
     except (json.JSONDecodeError, TypeError) as exc:
@@ -190,17 +196,24 @@ def _gemini(blob: bytes, content_type: str, business: Business) -> list[dict[str
         raise MenuReadError("The reader answered with something that was not a menu.") from exc
 
 
-def _last_text(payload: dict[str, Any]) -> str:
-    """The generated text, from the last step that carries any.
+def _gemini_text(payload: dict[str, Any]) -> str:
+    """The generated text out of a candidate.
 
-    Walked backwards rather than indexed, because a model that thinks first
-    puts reasoning steps ahead of its answer and the answer is the last thing
-    in the list, not the first.
+    Every part is walked rather than `parts[0]` indexed, because a model that
+    thinks first puts its reasoning in earlier parts and the JSON in a later
+    one; taking the first would parse the thinking.
     """
-    for step in reversed(payload.get("steps") or []):
-        for part in step.get("content") or []:
-            if isinstance(part, dict) and part.get("text"):
-                return str(part["text"])
+    for candidate in payload.get("candidates") or []:
+        answers = [
+            str(part["text"])
+            for part in (candidate.get("content") or {}).get("parts") or []
+            if isinstance(part, dict) and part.get("text") and not part.get("thought")
+        ]
+        if answers:
+            return answers[-1]
+    blocked = (payload.get("promptFeedback") or {}).get("blockReason")
+    if blocked:
+        raise MenuReadError(f"The reader refused that image ({blocked}).")
     raise MenuReadError("The reader did not return a menu.")
 
 
@@ -292,17 +305,20 @@ def _openai(blob: bytes, content_type: str, business: Business) -> list[dict[str
 def _raise_for_provider(response: Any) -> None:
     """Turn a provider's error into one sentence, and log the rest.
 
-    The body carries the account id and sometimes the prompt. It belongs in
-    the log, not on a dashboard the whole floor can see.
+    The body carries the account id and sometimes the prompt, so it goes to
+    the log rather than a dashboard the whole floor can see. The STATUS code
+    does come through: it is not sensitive, and without it "could not be
+    reached" sends whoever is standing there to read container logs to learn
+    the one thing that says which of a dozen causes it was.
     """
     if response.status_code < 400:
         return
-    log.error("menu reader refused: %s %s", response.status_code, response.text[:500])
+    log.error("menu reader refused: %s %s", response.status_code, response.text[:1000])
     if response.status_code in (401, 403):
         raise MenuReadError("The reader rejected the API key on the server.")
     if response.status_code == 429:
         raise MenuReadError("The reader is rate limited right now. Try again in a minute.")
-    raise MenuReadError("The reader could not be reached.")
+    raise MenuReadError(f"The reader could not be reached (HTTP {response.status_code}).")
 
 
 # --- the boundary ------------------------------------------------------------
