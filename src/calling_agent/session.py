@@ -46,6 +46,36 @@ log = logging.getLogger(__name__)
 TOOL_RESULT_TIMEOUT = 15.0
 
 
+def encode_tool_result(result: str) -> str:
+    """Encode a tool result the way the API asks for it: a JSON string.
+
+    The spec is explicit -- `result` is "a JSON string containing the tool
+    result" -- and a bare sentence is only the degenerate case of that. A
+    sentence works, which is exactly why this was easy to miss, and it costs
+    every field the tool worked out.
+
+    A result may carry a `data` mapping alongside its sentence. Duck-typed
+    rather than imported, like the `receipt` lookup below it: the relay stays
+    ignorant of which agent it is carrying, which is the point of
+    AgentDefinition.
+
+    What this fixes is a class of bug, not one field. A tool that knew today's
+    date could not tell the model the year, so the model guessed one and
+    booked into the past; a refusal that knew it was refusing a date in 2025
+    could only say "that is in the past", so the model could not see its own
+    mistake and made it again.
+    """
+    data = getattr(result, "data", None)
+    if not isinstance(data, dict) or not data:
+        return str(result)
+    try:
+        return json.dumps({"summary": str(result), **data}, default=str)
+    except (TypeError, ValueError):
+        # An unencodable field must not cost the caller their answer.
+        log.exception("could not encode tool result data; sending the sentence alone")
+        return str(result)
+
+
 class AgentSession:
     def __init__(
         self,
@@ -402,7 +432,7 @@ class AgentSession:
             payload = {
                 "type": p.TOOL_RESULT,
                 "call_id": call_id,
-                "result": result,
+                "result": encode_tool_result(result),
                 "is_error": is_error,
             }
             if call_id:

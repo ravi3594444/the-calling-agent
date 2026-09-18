@@ -66,6 +66,25 @@ def test_public_experience_has_no_key_and_does_not_claim_live_readiness(monkeypa
 
 
 
+def test_tool_results_reach_the_model_as_json_with_their_data():
+    """The API documents `result` as a JSON string, not a sentence.
+
+    Spoken is a str subclass, so json.dumps serialised it as the sentence
+    alone and dropped every field beside it. now() worked out the year and
+    could not say it; the model guessed one and booked into the past.
+    """
+    said = agent_tools.Spoken("It is 1:20 PM on Friday 18 September.", date="2026-09-18")
+    encoded = json.loads(session_module.encode_tool_result(said))
+
+    assert encoded["date"] == "2026-09-18", "the model still cannot see the year"
+    assert encoded["summary"] == "It is 1:20 PM on Friday 18 September."
+
+
+def test_a_result_carrying_nothing_is_sent_as_it_stands():
+    """Not every agent under this relay returns structured data."""
+    assert session_module.encode_tool_result("No tool named wibble.") == "No tool named wibble."
+
+
 def _agent_running(tool):
     """An AgentSession whose only tool is `tool`.
 

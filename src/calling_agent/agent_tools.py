@@ -552,10 +552,17 @@ def _refusal(
         if elsewhere:
             offer = f" The next I have is {formatting.when(business, elsewhere[0])}."
 
+    # `requested` and `now` ride along on EVERY refusal, not just a past one.
+    # A refusal the model cannot diagnose is a refusal it repeats: told only
+    # "that is in the past", it argued with the clock and tried the same wrong
+    # year three times. Told which instant it asked for and which instant it
+    # is, it can see its own mistake and fix it in one turn.
     return Spoken(
         sentence + offer,
         ok=False,
         reason=verdict.reason,
+        requested=when.isoformat(),
+        now=datetime.now(UTC).isoformat(),
         alternatives=[a.isoformat() for a in verdict.alternatives],
     )
 
@@ -595,8 +602,14 @@ def _queue_confirmation(business: Business, booking: Booking) -> None:
 
 # --- declarations ------------------------------------------------------------
 
-_DATE = {"type": "string", "description": "Date as YYYY-MM-DD."}
-_TIME = {"type": "string", "description": "24-hour time as HH:MM."}
+_DATE = {
+    "type": "string",
+    "description": (
+        "ISO-8601 date, YYYY-MM-DD (e.g. 2031-03-09). The four-digit year "
+        "comes from the now tool -- never guess it."
+    ),
+}
+_TIME = {"type": "string", "description": "24-hour time, HH:MM (e.g. 19:30)."}
 
 
 def tool_declarations(business: Business) -> list[dict[str, Any]]:

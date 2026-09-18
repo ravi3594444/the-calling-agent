@@ -64,6 +64,23 @@ def test_past_dates_are_refused(business):
     assert "in the past" in out
 
 
+def test_a_refusal_says_which_instant_it_refused(business):
+    """The model cannot correct a mistake it cannot see.
+
+    A live caller asked for 8 PM today. The model had only been told "Friday
+    18 September" -- no year -- so it sent 2025 and was told, three times,
+    "That is in the past." It argued with the clock and gave up, because the
+    refusal never said WHICH date it was refusing.
+    """
+    wrong_year = datetime.now(UTC).replace(year=datetime.now(UTC).year - 1)
+    out = agent_tools.hold(business, _args(wrong_year, business, units=2))
+
+    assert out.data["reason"] == "past"
+    requested = datetime.fromisoformat(out.data["requested"])
+    current = datetime.fromisoformat(out.data["now"])
+    assert requested.year < current.year, "the model cannot see the year it got wrong"
+
+
 def test_far_future_is_refused(business):
     far = future_slot(business, days_ahead=400)
     out = agent_tools.check_availability(business, _args(far, business, units=2))
