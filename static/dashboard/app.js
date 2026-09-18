@@ -44,7 +44,7 @@ class ApiError extends Error {
 async function request(path, options = {}){
   const headers = { "Accept": "application/json", ...(options.headers || {}) };
   if(TOKEN) headers["X-Tableline-Token"] = TOKEN;
-  if(options.body !== undefined){
+  if(options.body !== undefined && !(options.body instanceof FormData)){
     headers["Content-Type"] = "application/json";
     options = { ...options, body: JSON.stringify(options.body) };
   }
@@ -65,6 +65,9 @@ const api = {
   bookings     : date                => request(`/api/bookings?date=${encodeURIComponent(date)}`),
   updateBooking: (id, patch)         => request(`/api/bookings/${id}`, {method:"PATCH", body:patch}),
   createBooking: body                => request("/api/bookings", {method:"POST", body}),
+  moveBooking  : (id, startTime)     => request(`/api/bookings/${id}`,
+                                          {method:"PATCH", body:{start_time:startTime}}),
+  resend       : id                  => request(`/api/bookings/${id}/resend`, {method:"POST"}),
   pending      : ()                  => request("/api/bookings/pending"),
   decide       : (id, accept, chan)  => request(`/api/bookings/${id}/decide`,
                                           {method:"POST", body:{accept, channel:chan}}),
@@ -79,6 +82,12 @@ const api = {
   updateGuest  : (id, patch)         => request(`/api/guests/${id}`, {method:"PATCH", body:patch}),
   menu         : ()                  => request("/api/menu"),
   addDish      : body                => request("/api/menu", {method:"POST", body}),
+  uploadMenu   : file                => {
+                                          const form=new FormData();
+                                          form.append("file", file);
+                                          return request("/api/menu/upload",
+                                            {method:"POST", body:form});
+                                        },
   updateDish   : (id, patch)         => request(`/api/menu/${id}`, {method:"PATCH", body:patch}),
   settings     : ()                  => request("/api/settings"),
   saveSettings : (section, values)   => request(`/api/settings/${section}`, {method:"PUT", body:values}),
@@ -227,9 +236,16 @@ function drawBookings(){
 }
 
 function actionsFor(i,b){
+  /* Call is a plain tel: link, not a button: on the tablet by the door it
+     should hand off to whatever dials, and on a desktop it should do
+     nothing surprising. Resend needs a number to send to. */
+  const reach = (b.phone ? `<a class="btn" href="tel:${esc(b.phone)}">Call</a>` : "")
+    + (b.phone ? `<button class="btn" data-act="resend" data-i="${i}">Resend text</button>` : "");
   if(b.status==="confirmed"){
     return `<button class="btn key" data-act="arrived" data-i="${i}">Mark arrived</button>
       <button class="btn no" data-act="no_show" data-i="${i}">Did not arrive</button>
+      <button class="btn" data-act="move" data-i="${i}">Move</button>
+      ${reach}
       <button class="btn no" data-act="cancelled" data-i="${i}">Cancel</button>`;
   }
   if(b.status==="arrived"||b.status==="no_show"){
@@ -255,14 +271,50 @@ document.getElementById("rows").addEventListener("click", async e=>{
   button.dataset.busy="1"; button.classList.add("busy");
 
   const booking=data[+button.dataset.i];
+  const act=button.dataset.act;
+  /* A status change redraws the whole list, so its button is gone and never
+     needs unbusying. Move and resend leave the row where it is, so they do
+     -- hence the finally rather than a clear in the catch. */
+  let redrawn=false;
   try{
-    await api.updateBooking(booking.id,{status:button.dataset.act});
-    await loadBookings();
+    if(act==="move"){
+      askToMove(booking);
+    }else if(act==="resend"){
+      await api.resend(booking.id);
+      button.textContent="Text sent";
+    }else{
+      await api.updateBooking(booking.id,{status:act});
+      await loadBookings();
+      redrawn=true;
+    }
   }catch(err){
-    button.classList.remove("busy"); delete button.dataset.busy;
     alert(err.detail || "That didn't go through. Nothing has been changed.");
+  }finally{
+    if(!redrawn){ button.classList.remove("busy"); delete button.dataset.busy; }
   }
 });
+
+/* Moving a booking re-contends for capacity server-side, so a move into a
+   full slot is refused rather than silently overbooking. */
+function askToMove(booking){
+  const at=new Date(booking.start_time);
+  const pad=n=>String(n).padStart(2,"0");
+  openSheet({
+    title:`Move ${booking.name}`,
+    note:"The new time is checked against capacity, the same as a new booking.",
+    ok:"Move it",
+    fields:[
+      { name:"date", label:"New day", type:"date", required:true,
+        value:`${at.getFullYear()}-${pad(at.getMonth()+1)}-${pad(at.getDate())}` },
+      { name:"time", label:"New time", type:"time", required:true,
+        value:`${pad(at.getHours())}:${pad(at.getMinutes())}` },
+    ],
+    submit: async v => {
+      await api.moveBooking(booking.id, localInstant(v.date, v.time));
+      await loadBookings();
+    },
+  });
+}
 
 const DAY_LABEL={tonight:"Tonight",tomorrow:"Tomorrow",week:"This week"};
 
@@ -361,6 +413,126 @@ function settle(result){
   loadBookings();
   setTimeout(loadPending, 400);
 }
+
+
+/* ---------------- the sheet ---------------- */
+/* One overlay, four callers. A native <dialog> rather than a div, because
+   focus trapping, Esc, and making the page behind inert come with the
+   element -- hand-rolling those is how a form overlay ends up unusable with
+   a keyboard and invisible to a screen reader.
+
+   Fields are described, not written as markup, so every form on this page
+   gets the same label association, the same 44px touch targets and the same
+   error surface without four chances to forget one. */
+
+const sheet      = document.getElementById("sheet");
+const sheetForm  = document.getElementById("sheetForm");
+const sheetBody  = document.getElementById("sheetBody");
+const sheetErr   = document.getElementById("sheetErr");
+const sheetOk    = document.getElementById("sheetOk");
+let onSheetSubmit = null;
+
+function field(f){
+  const id = `sf-${f.name}`;
+  const span = f.wide === false ? "" : ` style="grid-column:1/-1"`;
+  const help = f.help ? `<div class="help">${esc(f.help)}</div>` : "";
+  const required = f.required ? " required" : "";
+  if(f.type === "select"){
+    const options = (f.options || []).map(o =>
+      `<option value="${esc(o.value)}"${o.value === f.value ? " selected" : ""}>${esc(o.label)}</option>`
+    ).join("");
+    return `<div class="f"${span}><label for="${id}">${esc(f.label)}</label>
+      <select id="${id}" name="${esc(f.name)}"${required}>${options}</select>${help}</div>`;
+  }
+  if(f.type === "textarea"){
+    return `<div class="f"${span}><label for="${id}">${esc(f.label)}</label>
+      <textarea id="${id}" name="${esc(f.name)}"${required}>${esc(f.value ?? "")}</textarea>${help}</div>`;
+  }
+  const extra = ["min","max","step","placeholder","inputmode"]
+    .filter(k => f[k] !== undefined).map(k => ` ${k}="${esc(f[k])}"`).join("");
+  return `<div class="f"${span}><label for="${id}">${esc(f.label)}</label>
+    <input id="${id}" name="${esc(f.name)}" type="${esc(f.type || "text")}"
+      value="${esc(f.value ?? "")}"${extra}${required}>${help}</div>`;
+}
+
+/* `submit` receives the values and may throw: the message is shown in the
+   sheet and the sheet stays open, because closing it would lose what they
+   typed and tell them nothing. */
+function openSheet({ title, note = "", fields = [], ok = "Save", submit }){
+  document.getElementById("sheetTitle").textContent = title;
+  document.getElementById("sheetNote").textContent = note;
+  sheetBody.innerHTML = fields.map(field).join("");
+  sheetOk.textContent = ok;
+  sheetErr.classList.remove("on");
+  sheetErr.textContent = "";
+  onSheetSubmit = submit;
+  sheet.showModal();
+  sheetBody.querySelector("input,select,textarea")?.focus();
+}
+
+document.getElementById("sheetCancel").addEventListener("click", () => sheet.close());
+
+sheetForm.addEventListener("submit", async e => {
+  e.preventDefault();                       // we close on success, not on submit
+  if(sheetOk.dataset.busy) return;          // guards a second tap
+  sheetOk.dataset.busy = "1";
+  sheetOk.classList.add("busy");
+  sheetErr.classList.remove("on");
+
+  const values = Object.fromEntries(new FormData(sheetForm).entries());
+  try{
+    await onSheetSubmit(values);
+    sheet.close();
+  }catch(err){
+    sheetErr.textContent = err instanceof ApiError && err.detail
+      ? err.detail
+      : "That did not go through. Nothing has been changed.";
+    sheetErr.classList.add("on");
+  }finally{
+    delete sheetOk.dataset.busy;
+    sheetOk.classList.remove("busy");
+  }
+});
+
+/* The venue's own today, not the browser's: a tablet left on UTC would
+   otherwise offer to book yesterday. */
+const venueToday = () => state.today || new Date().toISOString().slice(0,10);
+
+/* A local date and time as the instant the server should store. The server
+   reads it with fromisoformat and applies the venue's timezone, so no
+   offset is invented here. */
+const localInstant = (day, time) => `${day}T${time.length === 5 ? time + ":00" : time}`;
+
+/* ---------------- add a booking ---------------- */
+
+document.getElementById("addBooking").addEventListener("click", () => {
+  openSheet({
+    title: "Add a booking",
+    note: "This takes capacity exactly as the agent does, so it cannot overbook.",
+    ok: "Add booking",
+    fields: [
+      { name:"name",  label:"Name", required:true, wide:false },
+      { name:"phone", label:"Phone", type:"tel", wide:false,
+        help:"Optional. Without one they get no confirmation text." },
+      { name:"date",  label:"Day", type:"date", value:venueToday(), required:true, wide:false },
+      { name:"time",  label:"Time", type:"time", value:"19:00", required:true, wide:false },
+      { name:"party_size", label:`How many ${state.business?.unit_plural || "covers"}`,
+        type:"number", min:1, value:2, required:true, wide:false },
+      { name:"notes", label:"Notes", type:"textarea",
+        help:"Allergies, occasion, access needs, a quiet table." },
+    ],
+    submit: async v => {
+      await api.createBooking({
+        start_time: localInstant(v.date, v.time),
+        party_size: Number(v.party_size),
+        name: v.name,
+        phone: v.phone,
+        notes: v.notes,
+      });
+      loadBookings();
+    },
+  });
+});
 
 /* ---------------- calendar ---------------- */
 let month=null, year=null, selected=null, monthData=null, dayView="time";
@@ -633,6 +805,7 @@ async function loadGuests(){
   body.innerHTML=skeleton(5);
   try{
     const payload=await api.guests(guestFilter);
+    window.__guests=payload.guests;              // exactly what Export CSV writes
     document.getElementById("guestCount").textContent=
       `${payload.guests.length} guest${payload.guests.length===1?"":"s"}`;
     body.innerHTML = payload.guests.length
@@ -669,10 +842,59 @@ async function loadMenu(){
           <td class="r"><span class="sw ${item.available?"on":""}" data-avail="${item.id}"></span></td>
         </tr>`).join("")
       : `<tr><td colspan="4" class="empty">Nothing on the menu yet. Add a dish and the agent can answer about it.</td></tr>`;
+    drawMenuShot(payload.upload);
   }catch(e){
     body.innerHTML=`<tr><td colspan="4" class="empty">Couldn't load the menu.</td></tr>`;
   }
 }
+
+/* The printed menu, shown so the owner can read it while typing. The image
+   is fetched through request() rather than put straight in a src, because
+   the endpoint needs the dashboard token and an <img> cannot send one. */
+async function drawMenuShot(upload){
+  const host=document.getElementById("menuShot");
+  if(!host) return;
+  host.innerHTML="";
+  if(!upload) return;
+
+  if(upload.content_type==="application/pdf"){
+    host.innerHTML=`<p style="font-size:13px;color:var(--ink-3);margin-top:10px">A PDF menu is saved. Open it on your computer to type from it.</p>`;
+    return;
+  }
+  try{
+    const headers=TOKEN?{ "X-Tableline-Token":TOKEN }:{};
+    const response=await fetch(`/api/menu/upload/${upload.id}`,{headers});
+    if(!response.ok) return;
+    const url=URL.createObjectURL(await response.blob());
+    host.innerHTML=`<img alt="The menu you uploaded" src="${url}"
+      style="margin-top:14px;max-width:100%;border:1px solid var(--line);border-radius:10px">`;
+    host.querySelector("img").addEventListener("load",()=>URL.revokeObjectURL(url));
+  }catch(e){ /* the dishes are the point; a missing photo is not an error */ }
+}
+
+(function wireMenuUpload(){
+  const button=document.getElementById("menuPhoto");
+  const input=document.getElementById("menuFile");
+  if(!button||!input) return;
+
+  button.addEventListener("click",()=>input.click());
+  input.addEventListener("change",async ()=>{
+    const file=input.files?.[0];
+    if(!file) return;
+    button.classList.add("busy");
+    button.disabled=true;
+    try{
+      await api.uploadMenu(file);
+      await loadMenu();
+    }catch(err){
+      alert(err.detail || "That upload didn't go through. Nothing has been changed.");
+    }finally{
+      button.classList.remove("busy");
+      button.disabled=false;
+      input.value="";                  // so the same file can be picked again
+    }
+  });
+})();
 
 (function wireMenuEntry(){
   const input=document.getElementById("dishIn");
@@ -1301,5 +1523,102 @@ async function start(){
   showView(initial);
   freshness();
 }
+
+/* ---------------- closing and reducing a day ---------------- */
+/* All three write the same override row (PRD §6). They are separate buttons
+   because "we are shut" and "we can only do 20 tonight" are different
+   decisions, and one form asking which would make the common one slower. */
+
+async function afterOverride(){
+  await loadMonth();
+  await loadBlocked();
+  if(selected) loadDay(selected);
+}
+
+const unitWord = () => state.business?.unit_plural || "covers";
+
+document.getElementById("blockDate").addEventListener("click", () => {
+  openSheet({
+    title: "Block a date",
+    note: "The agent stops taking bookings for it. Bookings already taken are left alone.",
+    ok: "Block it",
+    fields: [
+      { name:"date", label:"Which day", type:"date", value:selected || venueToday(), required:true },
+      { name:"reason", label:"Why", placeholder:"Private party, staff holiday, refurb",
+        help:"Only you see this. It shows on the calendar so you remember." },
+    ],
+    submit: async v => {
+      await api.block(v.date, { type:"closed", reason:v.reason });
+      await afterOverride();
+    },
+  });
+});
+
+document.getElementById("closeDay").addEventListener("click", () => {
+  if(!selected) return;
+  openSheet({
+    title: `Close ${longDate(selected)}`,
+    note: "Nothing already booked is cancelled. You would still need to ring those guests.",
+    ok: "Close this day",
+    fields: [
+      { name:"reason", label:"Why", placeholder:"Private party, staff holiday, refurb" },
+    ],
+    submit: async v => {
+      await api.block(selected, { type:"closed", reason:v.reason });
+      await afterOverride();
+    },
+  });
+});
+
+document.getElementById("changeCap").addEventListener("click", () => {
+  if(!selected) return;
+  openSheet({
+    title: `Capacity for ${longDate(selected)}`,
+    note: `A one-off change for this day only. Your usual hours are untouched.`,
+    ok: "Change it",
+    fields: [
+      { name:"total_units", label:`How many ${unitWord()} per slot`, type:"number", min:0,
+        required:true, help:"Set it to 0 to take nothing at all." },
+      { name:"reason", label:"Why", placeholder:"Short staffed, half the room closed" },
+    ],
+    submit: async v => {
+      await api.block(selected, {
+        type:"reduced",
+        total_units: Number(v.total_units),
+        reason: v.reason,
+      });
+      await afterOverride();
+    },
+  });
+});
+
+/* ---------------- guests: export ---------------- */
+/* Built from the rows already on screen, so what you export is what you
+   filtered -- and it works with no connection, which a server round trip
+   would not. */
+
+function toCsv(rows){
+  const head = ["Name","Phone","Visits","No-shows","Last seen","Do not call"];
+  const cell = v => {
+    const s = String(v ?? "");
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const body = rows.map(g => [
+    g.name, g.phone, g.visits, g.no_shows, g.last || "", g.do_not_call ? "yes" : "",
+  ].map(cell).join(","));
+  return [head.join(","), ...body].join("\r\n");
+}
+
+document.getElementById("exportGuests").addEventListener("click", () => {
+  const rows = window.__guests || [];
+  if(!rows.length) return;
+  const blob = new Blob(["﻿" + toCsv(rows)], { type:"text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `guests-${guestFilter}-${venueToday()}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+});
 
 start();

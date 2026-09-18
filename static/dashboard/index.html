@@ -312,6 +312,23 @@ tr.missed td{color:var(--ink-3)}
 
 /* forms */
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px 26px}
+/* One sheet, four callers. <dialog> rather than a div because focus
+   trapping, Esc and inertness of the page behind come with the element. */
+dialog.sheet{border:1px solid var(--line);border-radius:14px;padding:0;background:var(--card);
+  color:var(--ink);width:min(520px,calc(100vw - 32px));box-shadow:0 18px 50px rgba(0,0,0,.28)}
+dialog.sheet::backdrop{background:rgba(0,0,0,.45)}
+dialog.sheet .card-h{margin:0}
+dialog.sheet form{margin:0}
+dialog.sheet .card-b{padding:20px 22px}
+dialog.sheet .sheet-acts{display:flex;gap:10px;justify-content:flex-end;
+  padding:14px 22px;border-top:1px solid var(--line)}
+dialog.sheet .sheet-err{color:var(--bad,#b4331f);font-size:14px;margin-top:12px;display:none}
+dialog.sheet .sheet-err.on{display:block}
+@media (max-width:560px){
+  dialog.sheet{width:calc(100vw - 20px)}
+  dialog.sheet .sheet-acts{flex-direction:column-reverse}
+  dialog.sheet .sheet-acts .btn{width:100%}
+}
 .grid.one{grid-template-columns:1fr}
 .grid.three{grid-template-columns:1fr 1fr 1fr}
 .f label{display:block;font-size:14px;font-weight:500;margin-bottom:6px}
@@ -419,7 +436,7 @@ tr.missed td{color:var(--ink-3)}
       <div class="search">
         <span class="live" id="live">Updated just now</span>
         <input id="q" type="search" placeholder="Name, number or reference" aria-label="Search bookings">
-        <button class="btn">Add a booking</button>
+        <button class="btn" id="addBooking">Add a booking</button>
       </div>
     </div>
     <table>
@@ -449,20 +466,32 @@ tr.missed td{color:var(--ink-3)}
         <button class="arrow" onclick="moveMonth(1)" aria-label="Next month"><svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>
         <button class="btn sm" onclick="goToday()">Today</button>
       </div>
-      <button class="btn">Block a date</button>
+      <button class="btn" id="blockDate">Block a date</button>
     </div>
     <div class="cal" id="cal"></div>
     <div class="save"><span class="note" id="calNote"></span></div>
   </section>
 
-  <section class="card" id="dayCard">
+  <dialog class="sheet" id="sheet" aria-labelledby="sheetTitle">
+  <form method="dialog" id="sheetForm">
+    <div class="card-h"><div><h2 id="sheetTitle">.</h2><p id="sheetNote"></p></div></div>
+    <div class="card-b"><div class="grid" id="sheetBody"></div>
+      <div class="sheet-err" id="sheetErr" role="alert"></div></div>
+    <div class="sheet-acts">
+      <button class="btn" type="button" id="sheetCancel">Cancel</button>
+      <button class="btn key" type="submit" id="sheetOk">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<section class="card" id="dayCard">
     <div class="card-h">
       <div><h2 id="dayHead">Thursday 16 October</h2><p id="daySub">Tap a day above to see it.</p></div>
       <div class="acts">
         <button class="btn key" id="vTime">By time</button>
         <button class="btn" id="vList">As a list</button>
-        <button class="btn">Close this day</button>
-        <button class="btn">Change capacity</button>
+        <button class="btn" id="closeDay">Close this day</button>
+        <button class="btn" id="changeCap">Change capacity</button>
       </div>
     </div>
     <div id="dayBody"></div>
@@ -506,7 +535,7 @@ tr.missed td{color:var(--ink-3)}
     <div class="tabs" id="guesttabs"><button class="on">All</button><button>Regulars</button><button>No-shows</button><button>Do not call</button></div>
   </div>
   <section class="card">
-    <div class="card-h"><div><h2 id="guestCount">Guests</h2><p>Built from the numbers that have called.</p></div><button class="btn">Export CSV</button></div>
+    <div class="card-h"><div><h2 id="guestCount">Guests</h2><p>Built from the numbers that have called.</p></div><button class="btn" id="exportGuests">Export CSV</button></div>
     <table>
       <thead><tr><th>Name</th><th style="width:170px" class="col-hide">Number</th><th style="width:86px" class="r">Visits</th><th style="width:98px" class="r">No-shows</th><th style="width:140px">Last seen</th></tr></thead>
       <tbody id="guestRows"></tbody>
@@ -526,9 +555,10 @@ tr.missed td{color:var(--ink-3)}
       <div class="quick">
         <input id="dishIn" placeholder="Burger 40" aria-label="Dish and price">
         <button class="btn key" id="dishAdd">Add</button>
-        <button class="btn">Upload a photo of the menu</button>
+        <button class="btn" id="menuPhoto">Upload a photo of the menu</button><input type="file" id="menuFile" accept="image/*,application/pdf" hidden>
       </div>
-      <p style="font-size:13px;color:var(--ink-3);margin-top:11px">Upload works from a PDF or a photo. You correct whatever it reads wrong.</p>
+      <p style="font-size:13px;color:var(--ink-3);margin-top:11px">A photo or PDF is kept here so you can read it while you type the dishes in. Nothing is read off it automatically — a half-read menu puts food on the agent's lips the kitchen never made.</p>
+      <div id="menuShot"></div>
     </div>
   </section>
   <section class="card">

@@ -15,11 +15,21 @@ from __future__ import annotations
 import logging
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Response, UploadFile
 from sqlalchemy import text
 
-from .. import availability, bookings, business_config, businesses, formatting, holidays
+from .. import (
+    availability,
+    bookings,
+    business_config,
+    businesses,
+    formatting,
+    holidays,
+    notifications,
+    tokens,
+)
 from ..businesses import Business
 from ..db import fetch_all, fetch_one, healthy, readonly, transaction
 from .deps import current_business
@@ -189,6 +199,46 @@ def update_booking(
         return _booking_json(business, moved)
 
     raise HTTPException(400, "Nothing in that change is editable.")
+
+
+@router.post("/bookings/{booking_id}/resend")
+def resend_confirmation(
+    booking_id: str,
+    business: Business = Depends(current_business),
+) -> dict[str, Any]:
+    """Text the confirmation again -- for a guest who deleted it or never got it.
+
+    A FRESH manage token, because only its hash is stored (PRD §12): the
+    original link cannot be reproduced, and reproducing it would be worse
+    anyway. Minting one here invalidates the old link, so exactly one live
+    link exists per booking at any time.
+    """
+    booking = bookings.by_id(business, booking_id)
+    if not booking.phone:
+        raise HTTPException(400, "There is no number on that booking to text.")
+
+    token = tokens.new_secret()
+    with transaction() as conn:
+        conn.execute(
+            text(
+                "UPDATE bookings SET manage_token_hash = :h,"
+                " manage_token_expires_at = :e"
+                " WHERE id = :i AND business_id = :b"
+            ),
+            {
+                "h": tokens.hash_secret(token),
+                "e": booking.start_time + timedelta(days=1),
+                "i": str(booking.id),
+                "b": str(business.id),
+            },
+        )
+        queued = notifications.queue_for_booking(
+            conn, business, booking, "confirmed", manage_token=token
+        )
+
+    if queued is None:
+        raise HTTPException(409, "Confirmation texts are switched off in Messages.")
+    return {"ok": True, "to": booking.phone}
 
 
 @router.post("/bookings/{booking_id}/decide")
@@ -506,6 +556,70 @@ def update_guest(
 # --- menu --------------------------------------------------------------------
 
 
+#: What a phone camera produces, with room to spare. Bigger than this is a
+#: scan nobody needs at this resolution, and it would sit in a row forever.
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+UPLOAD_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "application/pdf"}
+
+
+@router.post("/menu/upload")
+async def upload_menu(
+    file: UploadFile = File(...),
+    business: Business = Depends(current_business),
+) -> dict[str, Any]:
+    """Keep the printed menu where the owner can read it while typing dishes.
+
+    Deliberately not parsed. A half-read menu puts dishes in the agent's
+    mouth that the kitchen never made, and the wrong allergen on a dish is
+    the one mistake in this product that hurts somebody.
+    """
+    if file.content_type not in UPLOAD_TYPES:
+        raise HTTPException(400, "Upload a photo or a PDF.")
+
+    blob = await file.read()
+    if not blob:
+        raise HTTPException(400, "That file was empty.")
+    if len(blob) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "That file is too big. Eight megabytes is the limit.")
+
+    with transaction() as conn:
+        row = fetch_one(
+            conn,
+            "INSERT INTO menu_uploads (business_id, filename, content_type, bytes)"
+            " VALUES (:b, :f, :c, :d) RETURNING id, created_at",
+            b=str(business.id),
+            f=(file.filename or "")[:200],
+            c=file.content_type,
+            d=blob,
+        )
+    assert row is not None
+    return {"id": str(row.id), "content_type": file.content_type, "bytes": len(blob)}
+
+
+@router.get("/menu/upload/{upload_id}")
+def read_menu_upload(
+    upload_id: str,
+    business: Business = Depends(current_business),
+) -> Response:
+    """Serve one upload. Scoped to the business, so a guessed id reaches nothing."""
+    try:
+        parsed = UUID(upload_id)
+    except ValueError as exc:
+        raise HTTPException(404, "No such upload.") from exc
+
+    with readonly() as conn:
+        row = fetch_one(
+            conn,
+            "SELECT content_type, bytes FROM menu_uploads"
+            " WHERE id = :i AND business_id = :b",
+            i=str(parsed),
+            b=str(business.id),
+        )
+    if row is None:
+        raise HTTPException(404, "No such upload.")
+    return Response(content=bytes(row.bytes), media_type=row.content_type)
+
+
 @router.get("/menu")
 def read_menu(business: Business = Depends(current_business)) -> dict[str, Any]:
     with readonly() as conn:
@@ -515,8 +629,19 @@ def read_menu(business: Business = Depends(current_business)) -> dict[str, Any]:
             "  FROM menu_items WHERE business_id = :b ORDER BY position, name",
             b=str(business.id),
         )
+    with readonly() as conn:
+        latest = fetch_one(
+            conn,
+            "SELECT id, content_type FROM menu_uploads WHERE business_id = :b"
+            " ORDER BY created_at DESC LIMIT 1",
+            b=str(business.id),
+        )
     return {
         "currency_symbol": business.config["locale"]["currency_symbol"],
+        "upload": (
+            {"id": str(latest.id), "content_type": latest.content_type}
+            if latest is not None else None
+        ),
         "items": [
             {
                 "id": str(r.id),
