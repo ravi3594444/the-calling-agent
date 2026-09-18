@@ -303,3 +303,16 @@ def test_a_reader_that_fails_says_so_without_leaking_the_body(dash, business, mo
     response = dash.post(f"/api/menu/upload/{uploaded}/read")
     assert response.status_code == 502
     assert "API key" in response.json()["detail"]
+
+
+def test_an_upload_can_be_removed_and_the_dishes_from_it_stay(dash, business):
+    uploaded = dash.post("/api/menu/upload",
+                         files={"file": ("menu.png", PNG, "image/png")}).json()["id"]
+    dash.post("/api/menu/bulk", json={"dishes": [{"name": "Rava Dosa", "price": 90}]})
+
+    assert dash.delete(f"/api/menu/upload/{uploaded}").status_code == 200
+    menu = dash.get("/api/menu").json()
+    assert menu["upload"] is None, "the photo is gone"
+    assert [d["name"] for d in menu["items"]] == ["Rava Dosa"], "the dishes are not"
+
+    assert dash.delete(f"/api/menu/upload/{uploaded}").status_code == 404

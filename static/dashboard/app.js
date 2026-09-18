@@ -84,6 +84,7 @@ const api = {
   addDish      : body                => request("/api/menu", {method:"POST", body}),
   readMenu     : id                  => request(`/api/menu/upload/${id}/read`,
                                           {method:"POST"}),
+  removeUpload : id                  => request(`/api/menu/upload/${id}`, {method:"DELETE"}),
   addDishes    : dishes              => request("/api/menu/bulk",
                                           {method:"POST", body:{dishes}}),
   uploadMenu   : file                => {
@@ -874,8 +875,19 @@ async function drawMenuShot(upload){
     if(!response.ok) return;
     const url=URL.createObjectURL(await response.blob());
     host.innerHTML=`<img alt="The menu you uploaded" src="${url}"
-      style="margin-top:14px;max-width:100%;border:1px solid var(--line);border-radius:10px">`;
+      style="margin-top:14px;max-width:100%;border:1px solid var(--line);border-radius:10px">
+      <div class="acts" style="margin-top:10px">
+        <button class="btn" id="menuForget">Remove this photo</button>
+        <span style="font-size:13px;color:var(--ink-3)">Dishes you already added stay. Upload another to replace it.</span>
+      </div>`;
     host.querySelector("img").addEventListener("load",()=>URL.revokeObjectURL(url));
+    host.querySelector("#menuForget").addEventListener("click", async e=>{
+      const b=e.target; if(b.dataset.busy) return;
+      b.dataset.busy="1"; b.classList.add("busy");
+      try{ await api.removeUpload(upload.id); proposed=[]; drawReview(); await loadMenu(); }
+      catch(err){ alert(err.detail || "Couldn't remove it. Nothing has been changed."); }
+      finally{ delete b.dataset.busy; b.classList.remove("busy"); }
+    });
   }catch(e){ /* the dishes are the point; a missing photo is not an error */ }
 }
 

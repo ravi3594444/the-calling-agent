@@ -621,6 +621,26 @@ def read_menu_upload(
     return Response(content=bytes(row.bytes), media_type=row.content_type)
 
 
+@router.delete("/menu/upload/{upload_id}")
+def delete_menu_upload(
+    upload_id: str,
+    business: Business = Depends(current_business),
+) -> dict[str, Any]:
+    """Forget one upload. The dishes already added from it are untouched."""
+    try:
+        parsed = UUID(upload_id)
+    except ValueError as exc:
+        raise HTTPException(404, "No such upload.") from exc
+    with transaction() as conn:
+        gone = conn.execute(
+            text("DELETE FROM menu_uploads WHERE id = :i AND business_id = :b"),
+            {"i": str(parsed), "b": str(business.id)},
+        ).rowcount
+    if not gone:
+        raise HTTPException(404, "No such upload.")
+    return {"ok": True}
+
+
 @router.post("/menu/upload/{upload_id}/read")
 def read_menu_upload_text(
     upload_id: str,

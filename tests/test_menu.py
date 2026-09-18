@@ -248,3 +248,44 @@ def test_the_readers_thinking_is_not_mistaken_for_its_answer():
 
     with pytest.raises(menu_reader.MenuReadError, match="SAFETY"):
         menu_reader._gemini_text({"promptFeedback": {"blockReason": "SAFETY"}})
+
+
+def test_a_busy_reader_is_retried_then_reported_plainly(monkeypatch):
+    """Gemini answers 503 when overloaded. That clears in seconds, so it is
+    tried again -- but not forever, because an owner holding a phone camera
+    is not waiting a minute to hear that it is down."""
+    import httpx
+
+    from calling_agent import menu_reader
+
+    class Reply:
+        def __init__(self, status, body=None):
+            self.status_code = status
+            self.text = "overloaded"
+            self._body = body or {}
+
+        def json(self):
+            return self._body
+
+    calls = []
+
+    def flaky(url, **kwargs):
+        calls.append(url)
+        return Reply(503) if len(calls) < 3 else Reply(
+            200, {"candidates": [{"content": {"parts": [{"text": '{"dishes": []}'}]}}]}
+        )
+
+    monkeypatch.setattr(httpx, "post", flaky)
+    monkeypatch.setattr(menu_reader.time, "sleep", lambda s: None)
+    monkeypatch.setattr(menu_reader.settings, "gemini_api_key", "k")
+
+    # third try succeeds: the caller never knew
+    assert menu_reader._gemini(b"img", "image/png", None) == []
+    assert len(calls) == 3
+
+    # never recovers: three tries, then one plain sentence with the status in it
+    calls.clear()
+    monkeypatch.setattr(httpx, "post", lambda url, **kw: (calls.append(url), Reply(503))[1])
+    with pytest.raises(menu_reader.MenuReadError, match="busy right now \\(HTTP 503\\)"):
+        menu_reader._gemini(b"img", "image/png", None)
+    assert len(calls) == 3

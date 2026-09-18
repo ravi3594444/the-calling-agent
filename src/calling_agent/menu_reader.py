@@ -30,6 +30,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -157,19 +158,17 @@ def _gemini(blob: bytes, content_type: str, business: Business) -> list[dict[str
     generation to the schema itself, so there is no tool block to unwrap and
     no "Sure! Here is the menu:" to strip.
     """
-    import httpx
-
     if not settings.gemini_api_key:
         raise MenuReadError("GEMINI_API_KEY is not set on the server.")
 
     model = settings.menu_reader_model or "gemini-3.7-flash"
-    response = httpx.post(
+    response = _post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         headers={
             "x-goog-api-key": settings.gemini_api_key,
             "Content-Type": "application/json",
         },
-        json={
+        json_body={
             "contents": [{
                 "parts": [
                     {"text": INSTRUCTIONS},
@@ -184,7 +183,6 @@ def _gemini(blob: bytes, content_type: str, business: Business) -> list[dict[str
                 "responseSchema": SCHEMA,
             },
         },
-        timeout=settings.menu_reader_timeout,
     )
     _raise_for_provider(response)
 
@@ -219,8 +217,6 @@ def _gemini_text(payload: dict[str, Any]) -> str:
 
 @provider("anthropic")
 def _anthropic(blob: bytes, content_type: str, business: Business) -> list[dict[str, Any]]:
-    import httpx
-
     if not settings.anthropic_api_key:
         raise MenuReadError("ANTHROPIC_API_KEY is not set on the server.")
 
@@ -233,14 +229,14 @@ def _anthropic(blob: bytes, content_type: str, business: Business) -> list[dict[
                                           "media_type": content_type, "data": encoded}}
     )
 
-    response = httpx.post(
+    response = _post(
         "https://api.anthropic.com/v1/messages",
         headers={
             "x-api-key": settings.anthropic_api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         },
-        json={
+        json_body={
             "model": settings.menu_reader_model or "claude-sonnet-5",
             "max_tokens": 8000,
             "tools": [{
@@ -252,7 +248,6 @@ def _anthropic(blob: bytes, content_type: str, business: Business) -> list[dict[
             "messages": [{"role": "user", "content": [attachment, {"type": "text",
                                                                    "text": INSTRUCTIONS}]}],
         },
-        timeout=settings.menu_reader_timeout,
     )
     _raise_for_provider(response)
 
@@ -264,18 +259,16 @@ def _anthropic(blob: bytes, content_type: str, business: Business) -> list[dict[
 
 @provider("openai")
 def _openai(blob: bytes, content_type: str, business: Business) -> list[dict[str, Any]]:
-    import httpx
-
     if not settings.openai_api_key:
         raise MenuReadError("OPENAI_API_KEY is not set on the server.")
     if content_type == PDF_TYPE:
         raise MenuReadError("This reader takes photos, not PDFs. Upload a photo instead.")
 
     encoded = base64.standard_b64encode(blob).decode()
-    response = httpx.post(
+    response = _post(
         "https://api.openai.com/v1/chat/completions",
         headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-        json={
+        json_body={
             "model": settings.menu_reader_model or "gpt-4o",
             "messages": [{
                 "role": "user",
@@ -292,7 +285,6 @@ def _openai(blob: bytes, content_type: str, business: Business) -> list[dict[str
             }}],
             "tool_choice": {"type": "function", "function": {"name": "record_menu"}},
         },
-        timeout=settings.menu_reader_timeout,
     )
     _raise_for_provider(response)
 
@@ -300,6 +292,34 @@ def _openai(blob: bytes, content_type: str, business: Business) -> list[dict[str
     if not calls:
         raise MenuReadError("The reader did not return a menu.")
     return _dishes_from(json.loads(calls[0]["function"]["arguments"]))
+
+
+#: Statuses that mean "not now", not "not ever". Gemini answers 503 when the
+#: model is overloaded and 429 when the key is; both clear in seconds.
+TRANSIENT = {429, 502, 503, 504}
+RETRY_WAITS = (1.0, 3.0)
+
+
+def _post(url: str, *, headers: dict[str, str], json_body: dict[str, Any]) -> Any:
+    """POST once, or a few times when the provider says it is busy.
+
+    Two short retries, not a loop: a reader that is down stays down, and an
+    owner holding a phone camera is not waiting a minute to hear that.
+    """
+    import httpx
+
+    for attempt, wait in enumerate((*RETRY_WAITS, None)):
+        response = httpx.post(
+            url, headers=headers, json=json_body, timeout=settings.menu_reader_timeout
+        )
+        if response.status_code not in TRANSIENT or wait is None:
+            return response
+        log.warning(
+            "menu reader busy (HTTP %s), retry %d in %.0fs",
+            response.status_code, attempt + 1, wait,
+        )
+        time.sleep(wait)
+    return response  # pragma: no cover - the loop always returns
 
 
 def _raise_for_provider(response: Any) -> None:
@@ -316,8 +336,11 @@ def _raise_for_provider(response: Any) -> None:
     log.error("menu reader refused: %s %s", response.status_code, response.text[:1000])
     if response.status_code in (401, 403):
         raise MenuReadError("The reader rejected the API key on the server.")
-    if response.status_code == 429:
-        raise MenuReadError("The reader is rate limited right now. Try again in a minute.")
+    if response.status_code in TRANSIENT:
+        raise MenuReadError(
+            f"The reader is busy right now (HTTP {response.status_code}). "
+            "It was tried three times. Give it a minute."
+        )
     raise MenuReadError(f"The reader could not be reached (HTTP {response.status_code}).")
 
 
