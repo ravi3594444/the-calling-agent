@@ -59,6 +59,74 @@ class Settings(BaseSettings):
     restaurant_address: str = Field(default="", alias="RESTAURANT_ADDRESS")
     max_party_size: int = Field(default=12, alias="RESTAURANT_MAX_PARTY")
 
+    # --- Database -------------------------------------------------------
+    # The whole product's truth. Absent, the relay still runs (a consumer
+    # serving its own agent through this transport needs no schema of ours),
+    # but every booking tool answers that the book is unavailable rather than
+    # inventing a table.
+    database_url: str = Field(
+        default="postgresql+psycopg://tableline@localhost:5432/tableline",
+        alias="DATABASE_URL",
+    )
+    db_pool_size: int = Field(default=5, alias="DB_POOL_SIZE")
+    db_max_overflow: int = Field(default=5, alias="DB_MAX_OVERFLOW")
+    # Applied on startup. Off in production, where migrations are a deploy step.
+    migrate_on_start: bool = Field(default=False, alias="MIGRATE_ON_START")
+
+    # --- Tenancy --------------------------------------------------------
+    # A transport that knows the dialled number resolves the tenant from it.
+    # The browser transport does not have one, so it falls back to this slug.
+    # It is a POINTER to a row, never business behaviour: nothing in the code
+    # may branch on its value.
+    default_business_slug: str = Field(default="", alias="DEFAULT_BUSINESS_SLUG")
+
+    # --- Dashboard ------------------------------------------------------
+    # Tokens are stored hashed with this pepper, so a database dump alone does
+    # not open anybody's dashboard. Changing it invalidates every live link.
+    token_pepper: str = Field(default="", alias="TOKEN_PEPPER")
+    # Bind an unauthenticated dashboard to one business. Development only:
+    # refused unless ALLOW_INSECURE_DASHBOARD is also set.
+    dev_dashboard_business: str = Field(default="", alias="DEV_DASHBOARD_BUSINESS")
+    allow_insecure_dashboard: bool = Field(default=False, alias="ALLOW_INSECURE_DASHBOARD")
+    dashboard_base_url: str = Field(default="", alias="DASHBOARD_BASE_URL")
+
+    # --- Jobs -----------------------------------------------------------
+    # Expired holds must give their capacity back or the room fills with
+    # ghosts. One minute, per PRD §7.
+    sweep_interval_seconds: int = Field(default=60, alias="SWEEP_INTERVAL_SECONDS")
+    run_jobs_in_process: bool = Field(default=True, alias="RUN_JOBS_IN_PROCESS")
+    # How long a claimed task may run before it is presumed dead and retried.
+    # Longer than any handler takes, shorter than anyone waits for a text.
+    task_lease_seconds: int = Field(default=300, alias="TASK_LEASE_SECONDS")
+    # Total tries per task, first included. A carrier blip should not be
+    # final; a task failing forever should not be retried forever.
+    task_max_attempts: int = Field(default=3, alias="TASK_MAX_ATTEMPTS")
+
+    # --- Telephony ------------------------------------------------------
+    twilio_account_sid: str = Field(default="", alias="TWILIO_ACCOUNT_SID")
+    twilio_auth_token: str = Field(default="", alias="TWILIO_AUTH_TOKEN")
+    twilio_from_number: str = Field(default="", alias="TWILIO_FROM_NUMBER")
+    # Refuse webhooks that Twilio did not sign. Only turn this off locally.
+    verify_twilio_signature: bool = Field(default=True, alias="VERIFY_TWILIO_SIGNATURE")
+    # sms provider: "twilio" sends, "log" records the message and sends nothing.
+    sms_provider: str = Field(default="log", alias="SMS_PROVIDER")
+    # voice provider: "twilio" rings the guest, "log" records that it would have.
+    # Same default and for the same reason: a fresh checkout must not dial anyone.
+    voice_provider: str = Field(default="log", alias="VOICE_PROVIDER")
+    # How long an unanswered callback waits before ringing again.
+    redial_after_minutes: int = Field(default=10, alias="REDIAL_AFTER_MINUTES")
+
+    # --- Reading a photographed menu (PRD §14) --------------------------
+    # Empty means no reader: the dashboard hides the button rather than
+    # offering one that fails. Nothing a reader proposes is ever saved
+    # without the owner confirming it -- see menu_reader.
+    menu_reader: str = Field(default="", alias="MENU_READER")
+    menu_reader_model: str = Field(default="", alias="MENU_READER_MODEL")
+    menu_reader_timeout: float = Field(default=90.0, alias="MENU_READER_TIMEOUT")
+    gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
+    anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
+    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+
     host: str = Field(default="0.0.0.0", alias="HOST")
     port: int = Field(default=8080, alias="PORT")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")

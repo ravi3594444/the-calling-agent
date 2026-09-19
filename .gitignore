@@ -16,9 +16,12 @@ venv/
 *.key
 service-account*.json
 
+# Build artefacts from `pip install .`
+build/
+dist/
+
 # Node
 node_modules/
-dist/
 
 # Editors / OS
 .vscode/

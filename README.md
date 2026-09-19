@@ -1,19 +1,33 @@
 # Tableline · the-calling-agent
 
-A restaurant voice concierge with a complete call workspace. Keep the team focused
-on guests while the AI host handles browser conversations about reservations,
-menu questions, and visiting the restaurant.
+A phone number that answers the calls a business is already missing, takes
+bookings against real capacity, and tells the staff who is coming.
 
-The interface includes an audio-reactive visual, live transcript, restaurant action
-results, reservation receipts, mute controls, reconnect states, and an explicit
-transcript export. A separately labeled interactive demo works without a microphone
-or API key.
+The buyer's version: *"You missed 34 calls last week. We captured 29 of them."*
 
-See [the hackathon demo guide](docs/HACKATHON.md) and
-[the architecture](docs/ARCHITECTURE.md) for the implementation and its limits.
+It answers on a real phone line or in a browser, checks availability against a
+live counter, **holds the capacity before it asks for a name**, confirms, texts
+the guest, and shows the whole thing on a staff dashboard — today's list, the
+calendar, the call log with tool calls inline, guests, menu and settings.
 
-It currently answers the phone for a restaurant and takes table reservations:
-it checks availability, books, looks bookings up, and cancels them.
+Nothing about a venue is hardcoded. Hours, capacity, policy, message templates,
+locale, voice and prompt fragments are one validated config document per
+business, edited in the dashboard. **There is no `if business_id == N` anywhere
+in the codebase, and a test asserts it** — which is what lets the same engine
+answer for a restaurant, a dental practice and a garage.
+
+- [docs/TABLELINE.md](docs/TABLELINE.md) — architecture, the hold, how to put it
+  on a phone number
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the relay internals
+- [docs/DEPLOY.md](docs/DEPLOY.md) — running it on a server
+
+```
+caller ──phone──▶ Twilio ──media stream──▶  relay  ──▶ AssemblyAI Voice Agent API
+                                              │
+                                     tool calls (§8)
+                                              ▼
+                       availability engine ──▶ Postgres ◀── dashboard
+```
 
 Built on the [AssemblyAI Voice Agent API][vaapi], which handles speech-to-text,
 LLM routing, and text-to-speech over a single WebSocket. This repo is the thin
@@ -26,8 +40,8 @@ Phone browser  ──mic PCM16──▶  this server  ──▶  AssemblyAI Voic
      └────────────────── agent speech ◀────────────────────┘
 ```
 
-**Only one secret is needed: an AssemblyAI API key.** No telephony provider, no
-phone number, no identity verification.
+**To try it in a browser you need two things: an AssemblyAI API key and a
+Postgres.** A phone number is only needed to put it on a real line.
 
 [vaapi]: https://www.assemblyai.com/docs/voice-agents/voice-agent-api
 
@@ -35,11 +49,22 @@ phone number, no identity verification.
 
 ```bash
 make install                      # creates .venv, installs deps
-cp .env.example .env              # then put your ASSEMBLYAI_API_KEY in it
+cp .env.example .env              # then set ASSEMBLYAI_API_KEY and TOKEN_PEPPER
+docker compose up -d db           # or point DATABASE_URL at your own Postgres
+make migrate                      # create the schema
+make demo                         # create a venue, print its dashboard link
 make dev                          # http://localhost:8080
 ```
 
-Open <http://localhost:8080> and tap **Start conversation**.
+`make demo` prints two links:
+
+```
+dashboard:     http://localhost:8080/dashboard?token=<secret>
+browser agent: http://localhost:8080/?business=demo
+```
+
+Open the second and tap **Start conversation**; open the first to watch the
+booking appear.
 
 `localhost` is the one origin browsers exempt from the HTTPS requirement for
 microphone access. Anywhere else you need a real certificate — see
@@ -54,10 +79,17 @@ synthesis all happen upstream.
 
 | Concern | Where it lives |
 |---|---|
-| Agent prompt, voice, greeting, tools | `src/calling_agent/agent_config.py` |
+| Availability, alternatives, the calendar | `src/calling_agent/availability.py` |
+| Holds, confirm, the sweeper | `src/calling_agent/holds.py`, `slots.py` |
+| Booking lifecycle and the waitlist | `src/calling_agent/bookings.py` |
+| Per-business config and its schema | `src/calling_agent/business_config.py` |
+| The agent's tools | `src/calling_agent/agent_tools.py` |
+| Agent prompt, voice, greeting | `src/calling_agent/agent_config.py` |
 | Relay + tool dispatch | `src/calling_agent/session.py` |
 | Protocol message names | `src/calling_agent/protocol.py` |
-| Audio transport interface | `src/calling_agent/transport/` |
+| Audio transports (browser, Twilio) | `src/calling_agent/transport/` |
+| Dashboard and tool HTTP APIs | `src/calling_agent/api/` |
+| The staff dashboard | `static/dashboard/` |
 | Browser client | `static/index.html`, `static/js/`, `static/pcm-worklet.js` |
 
 ### Audio formats

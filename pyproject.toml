@@ -10,6 +10,29 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "python-dotenv>=1.0",
+    # Truth lives in Postgres: the hold transaction is defined by its locks.
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.2",
+    # Config is validated against a JSON Schema before it can break a call.
+    "jsonschema>=4.23",
+    # Real per-year public holidays, lunar calendars included (PRD §15b).
+    "holidays>=0.57",
+    # "next Monday", "kal", "+91 98765 43210" -- solved problems, not ours.
+    "parsedatetime>=2.6",
+    "dateparser>=1.2",
+    "phonenumbers>=8.13",
+    "langcodes[data]>=3.4",
+    # CLDR currency names: plurals are irregular (yen, won, rand take no -s).
+    "babel>=2.16",
+    # Signed, short-lived tickets for the telephony media stream.
+    "itsdangerous>=2.2",
+    # Twilio webhook signature validation and REST calls.
+    "twilio>=9.0",
+    # Twilio posts webhooks as form data, and the guest's cancel button is a
+    # form POST. Without this FastAPI raises at request time, not at import,
+    # so the failure lands on the first real phone call.
+    "python-multipart>=0.0.9",
+    "httpx>=0.28",
 ]
 
 [project.optional-dependencies]
@@ -27,12 +50,32 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Migrations, vertical profiles and the locale table are shipped INSIDE the
+# package. db.migrate() reads them through importlib.resources so an installed
+# wheel migrates exactly like a checkout does; without this it would raise
+# FileNotFoundError on the first boot of any container that pip-installs.
+[tool.setuptools.package-data]
+calling_agent = ["sql/*.sql", "data/*.json"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI states dependencies, query and body parsing in argument defaults.
+# That is the framework's idiom, not the mutable-default bug B008 looks for.
+extend-immutable-calls = [
+    "fastapi.Body",
+    "fastapi.Depends",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Query",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

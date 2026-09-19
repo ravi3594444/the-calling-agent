@@ -174,10 +174,13 @@ def test_tool_call_round_trips(upstream):
     upstream.will_send(
         {
             "type": "tool.call",
-            "name": "restaurant_info",
+            "name": "business_info",
             "call_id": "call-7",
             "arguments": {},
-        }
+        },
+        # The server always follows tool.call with reply.done, and that is the
+        # only point at which a result may be sent.
+        {"type": "reply.done", "status": "completed"},
     )
     with _client().websocket_connect("/ws") as ws:
         _completed_tool(ws, "call-7")
@@ -185,13 +188,14 @@ def test_tool_call_round_trips(upstream):
     results = [m for m in upstream.received if m["type"] == "tool.result"]
     assert results, f"no tool.result sent; got {[m['type'] for m in upstream.received]}"
     assert results[0]["call_id"] == "call-7"
-    assert "Opening hours" in results[0]["result"]
+    assert "The Copper Kettle" in results[0]["result"]
     assert results[0]["is_error"] is False
 
 
 def test_unknown_tool_reports_error_rather_than_crashing(upstream):
     upstream.will_send(
-        {"type": "tool.call", "name": "no_such_tool", "call_id": "c-9", "arguments": {}}
+        {"type": "tool.call", "name": "no_such_tool", "call_id": "c-9", "arguments": {}},
+        {"type": "reply.done", "status": "completed"},
     )
     with _client().websocket_connect("/ws") as ws:
         _completed_tool(ws, "c-9")
@@ -518,7 +522,7 @@ def test_tool_result_waits_for_reply_done(upstream):
     """
     upstream.will_send(
         {"type": "reply.started"},
-        {"type": "tool.call", "name": "restaurant_info", "call_id": "c-1", "arguments": {}},
+        {"type": "tool.call", "name": "business_info", "call_id": "c-1", "arguments": {}},
     )
 
     with _client().websocket_connect("/ws") as ws:
@@ -530,7 +534,7 @@ def test_tool_result_waits_for_reply_done(upstream):
 def test_reply_done_releases_the_queued_result(upstream):
     upstream.will_send(
         {"type": "reply.started"},
-        {"type": "tool.call", "name": "restaurant_info", "call_id": "c-1", "arguments": {}},
+        {"type": "tool.call", "name": "business_info", "call_id": "c-1", "arguments": {}},
         {"type": "reply.done", "status": "completed"},
     )
 
@@ -542,17 +546,44 @@ def test_reply_done_releases_the_queued_result(upstream):
     assert results[0]["call_id"] == "c-1"
 
 
-def test_tool_result_is_sent_at_once_when_no_reply_is_in_progress(upstream):
-    """With nothing to wait for, holding the result would stall the call."""
+def test_only_reply_done_releases_a_result(upstream):
+    """reply.done is the ONLY trigger. This test used to assert the opposite.
+
+    It held that a result should go out immediately whenever no reply was in
+    progress, which sounds safe and is what the guard timeout ended up doing
+    in practice -- sending mid-phrase, where the API ignores it. The rule is
+    "when reply.done is the latest event you have received", and a result sent
+    at any other moment is a result the agent never acts on.
+    """
     upstream.will_send(
-        {"type": "tool.call", "name": "restaurant_info", "call_id": "c-2", "arguments": {}}
+        {"type": "reply.started"},
+        {"type": "tool.call", "name": "business_info", "call_id": "c-2", "arguments": {}},
     )
 
     with _client().websocket_connect("/ws") as ws:
         _completed_tool(ws, "c-2")
+        assert not [m for m in upstream.received if m["type"] == "tool.result"]
 
-    results = [m for m in upstream.received if m["type"] == "tool.result"]
-    assert results and results[0]["call_id"] == "c-2"
+
+def test_an_interrupted_reply_discards_its_tool_results(upstream):
+    """The caller talked over the agent and moved on.
+
+    Answering the question they abandoned is worse than not answering it: the
+    agent would volunteer an availability check for a time nobody is asking
+    about any more.
+    """
+    upstream.will_send(
+        {"type": "reply.started"},
+        {"type": "tool.call", "name": "business_info", "call_id": "c-4", "arguments": {}},
+        {"type": "reply.done", "status": "interrupted"},
+    )
+
+    with _client().websocket_connect("/ws") as ws:
+        _completed_tool(ws, "c-4")
+
+    assert not [m for m in upstream.received if m["type"] == "tool.result"], (
+        "a result was delivered for a turn the caller abandoned"
+    )
 
 
 async def test_queued_results_are_flushed_if_reply_done_never_arrives(monkeypatch):
@@ -571,10 +602,11 @@ async def test_queued_results_are_flushed_if_reply_done_never_arrives(monkeypatc
 
     transport = _RecordingTransport()
     agent = session_mod.AgentSession(transport)
-    agent._reply_active = True  # a reply that never completes
+    # A reply that started and never finished.
+    agent._last_event = "reply.started"
     await agent._handle_tool_call(
         FakeUpstream(),
-        {"type": "tool.call", "name": "restaurant_info", "call_id": "c-3", "arguments": {}},
+        {"type": "tool.call", "name": "business_info", "call_id": "c-3", "arguments": {}},
     )
 
     assert not sent, "should be queued while the reply is active"

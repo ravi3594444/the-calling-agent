@@ -11,6 +11,25 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # The hold transaction is defined by Postgres row locks, so the tests that
+    # matter most need a real one. Without this service they SKIP, and a green
+    # run would mean nothing was checked.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tableline
+          POSTGRES_PASSWORD: tableline
+          POSTGRES_DB: tableline_test
+        options: >-
+          --health-cmd "pg_isready -U tableline"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+        ports:
+          - 5432:5432
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://tableline:tableline@127.0.0.1:5432/tableline_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,6 +38,8 @@ jobs:
           cache: pip
       - run: pip install -e '.[dev]'
       - run: ruff check src tests
+      # TEST_DATABASE_URL is set above, so an unreachable database fails the
+      # run rather than skipping it (see tests/conftest.py).
       - run: pytest -q
   client:
     runs-on: ubuntu-latest

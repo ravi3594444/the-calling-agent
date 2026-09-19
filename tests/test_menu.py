@@ -1,192 +1,291 @@
-"""Menu tools.
+"""The menu tools.
 
-These answers are read aloud verbatim, so they are tested for two things: the
-facts, and whether the sentence is actually speakable.
+Everything here is read aloud, so what is asserted is what a caller hears.
+The menu itself is per business now -- these tests load one, because a venue's
+food is theirs and the agent must never answer from somebody else's card.
 """
+
+from __future__ import annotations
 
 import pytest
 
-from calling_agent import menu as m
+from calling_agent import menu
+from calling_agent.db import transaction
+from tests.conftest import make_business
+
+
+def _stock(business, items):
+    from sqlalchemy import text
+
+    with transaction() as conn:
+        for position, item in enumerate(items):
+            conn.execute(
+                text(
+                    "INSERT INTO menu_items (business_id, name, section, price,"
+                    " description, tags, available, position)"
+                    " VALUES (:b, :name, :section, :price, :description, :tags,"
+                    " :available, :position)"
+                ),
+                {
+                    "b": str(business.id),
+                    "name": item["name"],
+                    "section": item.get("section", ""),
+                    "price": item.get("price"),
+                    "description": item.get("description", ""),
+                    "tags": item.get("tags", []),
+                    "available": item.get("available", True),
+                    "position": position,
+                },
+            )
+
+
+def _venue():
+    business = make_business(config={"features": {"menu": True}})
+    _stock(
+        business,
+        [
+            {"name": "Samosa Chaat", "section": "starters", "price": 220,
+             "description": "Crushed samosas with chickpeas and yoghurt",
+             "tags": ["vegetarian", "Contains dairy", "Contains gluten"]},
+            {"name": "Paneer Tikka", "section": "starters", "price": 340,
+             "description": "Cottage cheese charred in the tandoor",
+             "tags": ["vegetarian", "Contains dairy"]},
+            {"name": "Goan Fish Curry", "section": "mains", "price": 420,
+             "description": "Kingfish in a coconut and tamarind gravy",
+             "tags": ["Contains fish"]},
+            {"name": "Mushroom Xacuti", "section": "mains", "price": 360,
+             "description": "Mushrooms in a roasted coconut masala",
+             "tags": ["vegan"]},
+            {"name": "Pork Vindaloo", "section": "mains", "price": 480,
+             "description": "Off tonight", "tags": [], "available": False},
+        ],
+    )
+    return business
 
 
-def test_no_category_lists_the_sections():
-    out = m.get_menu({})
-    for section in ("starters", "mains", "desserts"):
-        assert section in out
+# --- what a caller hears -----------------------------------------------------
 
 
-def test_unknown_category_says_what_exists():
-    out = m.get_menu({"category": "sushi"})
-    assert "no 'sushi' section" in out
-    assert "starters" in out
+def test_the_agent_is_never_handed_the_whole_menu():
+    """A tool that returned forty dishes would be read at the caller."""
+    business = _venue()
+    spoken = menu.get_menu(business, {"category": "mains"})
+    assert spoken.count(",") <= menu.MAX_SPOKEN * 2
 
 
-def test_a_section_names_dishes_with_prices():
-    out = m.get_menu({"category": "mains"})
-    assert "Butter Chicken" in out
-    assert "480 rupees" in out
+def test_asking_with_no_category_lists_the_sections():
+    business = _venue()
+    spoken = menu.get_menu(business, {})
+    assert "starters" in spoken and "mains" in spoken
 
 
-def test_long_sections_are_truncated_for_speech():
-    """Reading forty dishes at a caller is useless."""
-    out = m.get_menu({"category": "mains"})
-    named = sum(1 for d in m.MENU if d.category == "mains" and d.name in out)
-    assert named <= m.SPOKEN_LIMIT
-    assert "more if they want" in out
+def test_prices_are_spoken_as_words_not_as_a_number_with_decimals():
+    business = _venue()
+    spoken = menu.get_menu(business, {"category": "mains"})
+    assert "rupee" in spoken.lower()
+    assert ".00" not in spoken
 
 
-def test_remainder_is_grammatical_when_exactly_one_is_left():
-    """'There are 1 more' would be read out loud as written."""
-    dishes = list(m.MENU)[: m.SPOKEN_LIMIT + 1]
-    out = m._describe(dishes)
-    assert "There is one more" in out
-    assert "are 1 more" not in out
+def test_a_dish_that_is_off_is_not_offered():
+    business = _venue()
+    assert "Vindaloo" not in menu.get_menu(business, {"category": "mains"})
+    # ...but staff can still look it up, which is how they answer "do you do it?"
+    assert "Vindaloo" in menu.dish_details(business, {"name": "vindaloo"})
 
 
-def test_remainder_spells_out_small_numbers():
-    dishes = list(m.MENU)[: m.SPOKEN_LIMIT + 3]
-    assert "three more" in m._describe(dishes)
+# --- allergies ---------------------------------------------------------------
 
 
-def test_lists_read_naturally():
-    assert m._join(["a"]) == "a"
-    assert m._join(["a", "b"]) == "a and b"
-    assert m._join(["a", "b", "c"]) == "a, b and c"
+def test_an_allergen_is_excluded_rather_than_reasoned_about():
+    business = _venue()
+    spoken = menu.find_dishes(business, {"avoid": ["fish"]})
+    assert "Fish Curry" not in spoken
+    assert "Xacuti" in spoken
 
 
-# --- dietary and allergens ---------------------------------------------------
+def test_exclusion_reads_the_description_too_not_just_the_tags():
+    """A venue writes an ingredient in prose as often as in a tag."""
+    business = _venue()
+    spoken = menu.find_dishes(business, {"avoid": ["coconut"]})
+    assert "Xacuti" not in spoken and "Fish Curry" not in spoken
 
 
-@pytest.mark.parametrize("diet,attr", [("vegan", "vegan"), ("vegetarian", "vegetarian")])
-def test_dietary_filters_only_return_matching_dishes(diet, attr):
-    out = m.find_dishes({"dietary": diet})
-    named = [d for d in m.MENU if d.name in out]
-    assert named
-    assert all(getattr(d, attr) for d in named)
+def test_dish_details_says_what_it_contains_not_what_it_is_free_of():
+    business = _venue()
+    spoken = menu.dish_details(business, {"name": "samosa"})
+    assert "Contains dairy" in spoken or "contains dairy" in spoken.lower()
+    assert "free of" not in spoken.lower()
+    assert "kitchen" in spoken.lower(), "an allergy answer must hand off to the kitchen"
 
 
-def test_allergen_exclusion_is_honoured():
-    """A wrong answer here could hurt someone."""
-    out = m.find_dishes({"avoid": ["dairy"]})
-    named = [d for d in m.MENU if d.name in out]
-    assert named
-    assert all("dairy" not in d.allergens for d in named)
+def test_a_dietary_filter_keeps_only_what_is_marked():
+    business = _venue()
+    spoken = menu.find_dishes(business, {"dietary": "vegan"})
+    assert "Xacuti" in spoken
+    assert "Paneer" not in spoken
 
 
-def test_multiple_allergens_are_all_excluded():
-    out = m.find_dishes({"avoid": ["dairy", "nuts", "gluten"]})
-    named = [d for d in m.MENU if d.name in out]
-    assert named
-    for dish in named:
-        assert not ({"dairy", "nuts", "gluten"} & set(dish.allergens))
+# --- edges -------------------------------------------------------------------
 
 
-def test_spice_ceiling_is_respected():
-    out = m.find_dishes({"max_spice": 0})
-    named = [d for d in m.MENU if d.name in out]
-    assert named
-    assert all(d.spice == 0 for d in named)
+def test_a_venue_with_no_menu_says_so_rather_than_inventing_one():
+    business = make_business()
+    for tool in (menu.get_menu, menu.find_dishes, menu.recommend_dishes):
+        assert "kitchen" in tool(business, {}).lower()
 
 
-def test_price_ceiling_is_respected():
-    out = m.find_dishes({"max_price": 200})
-    named = [d for d in m.MENU if d.name in out]
-    assert named
-    assert all(d.price <= 200 for d in named)
+def test_an_unknown_dish_is_reported_not_invented():
+    business = _venue()
+    assert "not on the menu" in menu.dish_details(business, {"name": "lasagne"})
 
 
-def test_no_match_tells_the_agent_to_check_rather_than_invent():
-    out = m.find_dishes({"query": "spaghetti carbonara"})
-    assert "kitchen" in out
+def test_a_price_ceiling_is_respected():
+    business = _venue()
+    spoken = menu.find_dishes(business, {"max_price": 300})
+    assert "Samosa" in spoken
+    assert "Fish Curry" not in spoken
 
 
-def test_unreadable_filters_are_reported_not_raised():
-    assert "not a price" in m.find_dishes({"max_price": "cheap"})
-    assert "not a spice level" in m.find_dishes({"max_spice": "very"})
+def test_one_venue_never_sees_another_venue_s_menu():
+    """business_id is on every query (PRD §20)."""
+    stocked = _venue()
+    other = make_business()
+    _stock(other, [{"name": "Beef Wellington", "section": "mains", "price": 900}])
 
+    assert "Wellington" not in menu.get_menu(stocked, {"category": "mains"})
+    assert "Xacuti" not in menu.get_menu(other, {"category": "mains"})
 
-# --- dish details ------------------------------------------------------------
 
+def test_every_declared_menu_tool_has_an_implementation():
+    declared = {tool["name"] for tool in menu.TOOLS}
+    assert declared == set(menu.IMPLEMENTATIONS)
 
-def test_details_cover_price_spice_and_allergens():
-    out = m.dish_details({"name": "butter chicken"})
-    assert "480 rupees" in out
-    assert "mild" in out
-    assert "dairy" in out and "nuts" in out
 
+# --- the reader boundary -----------------------------------------------------
 
-def test_details_match_on_a_partial_name():
-    """Speech recognition rarely delivers the full dish name."""
-    assert "Gulab Jamun" in m.dish_details({"name": "gulab"})
 
+def test_model_output_that_is_not_a_dish_never_becomes_one():
+    """Everything here is model output, so none of it is trusted.
 
-def test_unknown_dish_is_reported():
-    assert "not on the menu" in m.dish_details({"name": "pizza"})
+    A name that came back as a number, a price as "£12", tags as a bare
+    string: all of it has to stop at this boundary rather than reach a review
+    screen looking like a real dish.
+    """
+    from calling_agent import menu_reader
 
+    assert menu_reader._clean("not a dict") is None
+    assert menu_reader._clean({"name": "   "}) is None
+    assert menu_reader._clean({"price": 12}) is None
 
-def test_missing_name_asks_which_dish():
-    assert "Which dish" in m.dish_details({})
+    priced = menu_reader._clean({"name": "Dal", "price": "£12"})
+    assert priced.price is None, "a currency symbol is not a price"
 
+    absurd = menu_reader._clean({"name": "Dal", "price": 10**9})
+    assert absurd.price is None, "a price nobody charges is a misread decimal"
 
-def test_vegan_dishes_are_not_also_called_vegetarian():
-    """Saying both is noise; vegan already implies it."""
-    out = m.dish_details({"name": "chana masala"})
-    assert "vegan" in out
-    assert "vegetarian" not in out
+    tagged = menu_reader._clean({"name": "Dal", "tags": "nuts"})
+    assert tagged.tags == ["nuts"], "one tag is still a list"
 
+    trimmed = menu_reader._clean({"name": "x" * 500, "description": "y" * 900})
+    assert len(trimmed.name) == 200
+    assert len(trimmed.description) == 500
 
-# --- recommendations ---------------------------------------------------------
 
+def test_the_reader_is_told_to_copy_allergens_and_never_infer_them():
+    """The one instruction in this product that can hurt somebody."""
+    from calling_agent import menu_reader
 
-def test_recommendations_are_popular_dishes():
-    out = m.recommend_dishes({})
-    named = [d for d in m.MENU if d.name in out]
-    assert named and all(d.popular for d in named)
+    instructions = " ".join(menu_reader.INSTRUCTIONS.split())
+    assert "Never work out an allergen" in instructions
+    assert "Copy. Do not infer" in instructions
 
 
-def test_vegan_recommendations_are_all_vegan():
-    out = m.recommend_dishes({"dietary": "vegan"})
-    named = [d for d in m.MENU if d.name in out]
-    assert named and all(d.vegan for d in named)
+def test_an_unreadable_upload_is_refused_rather_than_guessed():
+    from calling_agent import menu_reader
+    from calling_agent.config import settings
 
+    original = settings.menu_reader
+    settings.menu_reader = ""
+    try:
+        with pytest.raises(menu_reader.MenuReadError, match="No menu reader"):
+            menu_reader.read(None, b"x", "image/png")
+    finally:
+        settings.menu_reader = original
 
-# --- data integrity ----------------------------------------------------------
 
+def test_a_reader_with_no_key_is_not_offered():
+    """The button must not appear for a provider that will fail on the click."""
+    from calling_agent import menu_reader
+    from calling_agent.config import settings
 
-def test_every_dish_sits_in_a_real_category():
-    assert {d.category for d in m.MENU} <= set(m.CATEGORIES)
+    original = (settings.menu_reader, settings.gemini_api_key)
+    try:
+        settings.menu_reader, settings.gemini_api_key = "gemini", ""
+        assert menu_reader.configured() is False, "named but keyless is not configured"
 
+        settings.gemini_api_key = "a-key"
+        assert menu_reader.configured() is True
+    finally:
+        settings.menu_reader, settings.gemini_api_key = original
 
-def test_every_category_has_at_least_one_dish():
-    for category in m.CATEGORIES:
-        assert any(d.category == category for d in m.MENU), category
 
+def test_the_readers_thinking_is_not_mistaken_for_its_answer():
+    """A thinking model puts reasoning in earlier parts and JSON in a later one.
 
-def test_vegan_dishes_are_marked_vegetarian_too():
-    """Otherwise a vegetarian search silently hides vegan food."""
-    for dish in m.MENU:
-        if dish.vegan:
-            assert dish.vegetarian, dish.name
+    Taking parts[0] parses the reasoning, which is not a menu.
+    """
+    from calling_agent import menu_reader
 
+    assert menu_reader._gemini_text({"candidates": [{"content": {"parts": [
+        {"text": "Let me look at the dosa section.", "thought": True},
+        {"text": '{"dishes": [{"name": "Rava Masala Dosa"}]}'},
+    ]}}]}) == '{"dishes": [{"name": "Rava Masala Dosa"}]}'
 
-def test_dairy_dishes_are_never_marked_vegan():
-    for dish in m.MENU:
-        if "dairy" in dish.allergens:
-            assert not dish.vegan, dish.name
+    # Not every model flags its thinking. The answer is still the last part.
+    assert menu_reader._gemini_text({"candidates": [{"content": {"parts": [
+        {"text": "thinking"}, {"text": "answer"},
+    ]}}]}) == "answer"
 
+    with pytest.raises(menu_reader.MenuReadError, match="SAFETY"):
+        menu_reader._gemini_text({"promptFeedback": {"blockReason": "SAFETY"}})
 
-def test_gluten_dishes_are_never_marked_gluten_free():
-    for dish in m.MENU:
-        if "gluten" in dish.allergens:
-            assert not dish.gluten_free, dish.name
 
+def test_a_busy_reader_is_retried_then_reported_plainly(monkeypatch):
+    """Gemini answers 503 when overloaded. That clears in seconds, so it is
+    tried again -- but not forever, because an owner holding a phone camera
+    is not waiting a minute to hear that it is down."""
+    import httpx
 
-def test_every_declared_tool_has_an_implementation():
-    assert {t["name"] for t in m.TOOLS} == set(m.IMPLEMENTATIONS)
+    from calling_agent import menu_reader
 
+    class Reply:
+        def __init__(self, status, body=None):
+            self.status_code = status
+            self.text = "overloaded"
+            self._body = body or {}
 
-def test_tool_schemas_use_the_shape_the_api_requires():
-    for tool in m.TOOLS:
-        assert tool["type"] == "function"
-        assert "parameters" in tool and "input_schema" not in tool
-        assert tool["description"]
+        def json(self):
+            return self._body
+
+    calls = []
+
+    def flaky(url, **kwargs):
+        calls.append(url)
+        return Reply(503) if len(calls) < 3 else Reply(
+            200, {"candidates": [{"content": {"parts": [{"text": '{"dishes": []}'}]}}]}
+        )
+
+    monkeypatch.setattr(httpx, "post", flaky)
+    monkeypatch.setattr(menu_reader.time, "sleep", lambda s: None)
+    monkeypatch.setattr(menu_reader.settings, "gemini_api_key", "k")
+
+    # third try succeeds: the caller never knew
+    assert menu_reader._gemini(b"img", "image/png", None) == []
+    assert len(calls) == 3
+
+    # never recovers: three tries, then one plain sentence with the status in it
+    calls.clear()
+    monkeypatch.setattr(httpx, "post", lambda url, **kw: (calls.append(url), Reply(503))[1])
+    with pytest.raises(menu_reader.MenuReadError, match="busy right now \\(HTTP 503\\)"):
+        menu_reader._gemini(b"img", "image/png", None)
+    assert len(calls) == 3

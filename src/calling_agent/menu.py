@@ -1,246 +1,203 @@
 """The menu, and the tools for answering questions about it.
 
-Placeholder data. Prices are in rupees.
+The menu is per business and lives in `menu_items`, edited in the dashboard.
+There is no built-in menu: a venue's food is theirs, and an agent that answered
+from a demo card would confidently describe dishes the kitchen has never made.
 
-Everything here is written to be *spoken*. A menu tool that returns the whole
-card is useless on a phone call: the agent would read forty dishes at a
+Everything here is written to be SPOKEN. A menu tool that returns the whole
+card is useless on a phone call -- the agent would read forty dishes at a
 caller. So each function returns a handful of items in a sentence the agent can
 say as-is, and the prompt tells it to offer a few and ask.
+
+ALLERGIES BIAS TOWARDS EXCLUDING. `find_dishes(avoid=...)` drops anything whose
+name, description or tags mention the allergen at all. Over-excluding costs a
+recommendation; under-excluding could hurt someone.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
+
+from . import formatting
+from .businesses import Business
+from .db import fetch_all, readonly
+
+#: Tags treated as dietary claims rather than warnings. Everything else a venue
+#: writes is shown as-is, because "Contains fish" and "Chef's pick" are both
+#: things they type and neither should be silently reinterpreted.
+DIETARY_TAGS = frozenset(
+    {
+        "vegan",
+        "vegetarian",
+        "veg",
+        "gluten free",
+        "gluten-free",
+        "dairy free",
+        "dairy-free",
+        "nut free",
+        "nut-free",
+        "halal",
+        "kosher",
+        "jain",
+    }
+)
+
+MAX_SPOKEN = 3
 
 
 @dataclass(frozen=True)
 class Dish:
     name: str
-    category: str
-    price: int
+    section: str
+    price: Decimal | None
     description: str
-    spice: int = 0  # 0 mild, 1 medium, 2 hot
-    vegan: bool = False
-    vegetarian: bool = False
-    gluten_free: bool = False
-    popular: bool = False
-    allergens: tuple[str, ...] = field(default_factory=tuple)
+    tags: tuple[str, ...]
 
-    def spoken(self) -> str:
-        return f"{self.name}, {self.price} rupees"
+    @property
+    def dietary(self) -> list[str]:
+        return [t for t in self.tags if t.strip().lower() in DIETARY_TAGS]
+
+    @property
+    def notes(self) -> list[str]:
+        return [t for t in self.tags if t.strip().lower() not in DIETARY_TAGS]
+
+    def haystack(self) -> str:
+        return " ".join([self.name, self.description, *self.tags]).lower()
 
 
-MENU: tuple[Dish, ...] = (
-    # --- Starters ---
-    Dish("Samosa Chaat", "starters", 220,
-         "Crushed samosas with chickpeas, yoghurt and tamarind chutney",
-         spice=1, vegetarian=True, popular=True, allergens=("gluten", "dairy")),
-    Dish("Paneer Tikka", "starters", 340,
-         "Cottage cheese charred in the tandoor with peppers and onion",
-         spice=1, vegetarian=True, gluten_free=True, popular=True, allergens=("dairy",)),
-    Dish("Chilli Gobi", "starters", 280,
-         "Crisp cauliflower tossed with green chilli and spring onion",
-         spice=2, vegan=True, vegetarian=True),
-    Dish("Tandoori Chicken Wings", "starters", 360,
-         "Yoghurt and red chilli marinade, cooked over charcoal",
-         spice=1, gluten_free=True, allergens=("dairy",)),
-    Dish("Amritsari Fish", "starters", 420,
-         "Gram flour battered river fish with ajwain and lemon",
-         spice=1, allergens=("fish",)),
+def _load(business: Business, *, available_only: bool = True) -> list[Dish]:
+    clause = " AND available" if available_only else ""
+    with readonly() as conn:
+        rows = fetch_all(
+            conn,
+            "SELECT name, section, price, description, tags FROM menu_items"
+            " WHERE business_id = :b" + clause + " ORDER BY position, name",
+            b=str(business.id),
+        )
+    return [
+        Dish(
+            name=r.name,
+            section=(r.section or "").strip(),
+            price=r.price,
+            description=(r.description or "").strip(),
+            tags=tuple(r.tags or []),
+        )
+        for r in rows
+    ]
 
-    # --- Mains ---
-    Dish("Butter Chicken", "mains", 480,
-         "Charcoal chicken in a tomato and cream gravy, lightly sweet",
-         spice=0, gluten_free=True, popular=True, allergens=("dairy", "nuts")),
-    Dish("Rogan Josh", "mains", 540,
-         "Slow-cooked Kashmiri lamb with fennel and dried chilli",
-         spice=2, gluten_free=True, allergens=("dairy",)),
-    Dish("Dal Makhani", "mains", 380,
-         "Black lentils simmered overnight with butter and cream",
-         spice=0, vegetarian=True, gluten_free=True, popular=True, allergens=("dairy",)),
-    Dish("Chana Masala", "mains", 340,
-         "Chickpeas with ginger, tomato and roasted cumin",
-         spice=1, vegan=True, vegetarian=True, gluten_free=True),
-    Dish("Palak Paneer", "mains", 420,
-         "Cottage cheese in a spinach gravy with garlic",
-         spice=0, vegetarian=True, gluten_free=True, allergens=("dairy",)),
-    Dish("Baingan Bharta", "mains", 360,
-         "Smoked aubergine mashed with tomato and green chilli",
-         spice=1, vegan=True, vegetarian=True, gluten_free=True),
-    Dish("Goan Prawn Curry", "mains", 620,
-         "Prawns in coconut and kokum, tart and hot",
-         spice=2, gluten_free=True, allergens=("shellfish",)),
 
-    # --- Breads and rice ---
-    Dish("Butter Naan", "breads", 90, "Leavened flatbread from the tandoor",
-         vegetarian=True, popular=True, allergens=("gluten", "dairy")),
-    Dish("Garlic Naan", "breads", 110, "Naan with garlic and coriander",
-         vegetarian=True, allergens=("gluten", "dairy")),
-    Dish("Laccha Paratha", "breads", 120, "Layered wholewheat flatbread",
-         vegetarian=True, allergens=("gluten", "dairy")),
-    Dish("Steamed Basmati", "rice", 150, "Plain long-grain rice",
-         vegan=True, vegetarian=True, gluten_free=True),
-    Dish("Hyderabadi Biryani", "rice", 520,
-         "Layered rice with mutton, saffron and fried onion",
-         spice=1, allergens=("dairy",)),
-    Dish("Vegetable Pulao", "rice", 320,
-         "Basmati with peas, carrot and whole spices",
-         vegan=True, vegetarian=True, gluten_free=True),
+def _price(business: Business, dish: Dish) -> str:
+    """"420 Indian rupees" -- read aloud, so a name rather than a symbol."""
+    return formatting.spoken_money(business, dish.price)
 
-    # --- Sides ---
-    Dish("Raita", "sides", 120, "Whisked yoghurt with cucumber and cumin",
-         vegetarian=True, gluten_free=True, allergens=("dairy",)),
-    Dish("Kachumber Salad", "sides", 140, "Onion, tomato and cucumber with lime",
-         vegan=True, vegetarian=True, gluten_free=True),
 
-    # --- Desserts ---
-    Dish("Gulab Jamun", "desserts", 180, "Milk dumplings in rose syrup, served warm",
-         vegetarian=True, popular=True, allergens=("dairy", "gluten")),
-    Dish("Kulfi", "desserts", 200, "Set pistachio and cardamom ice cream",
-         vegetarian=True, gluten_free=True, allergens=("dairy", "nuts")),
-    Dish("Gajar Halwa", "desserts", 190, "Carrot slow-cooked in milk with ghee",
-         vegetarian=True, gluten_free=True, allergens=("dairy", "nuts")),
-
-    # --- Drinks ---
-    Dish("Masala Chai", "drinks", 90, "Black tea boiled with ginger and cardamom",
-         vegetarian=True, gluten_free=True),
-    Dish("Sweet Lassi", "drinks", 140, "Chilled yoghurt drink",
-         vegetarian=True, gluten_free=True, allergens=("dairy",)),
-    Dish("Nimbu Pani", "drinks", 80, "Fresh lime with salt or sugar",
-         vegan=True, vegetarian=True, gluten_free=True),
-)
-
-CATEGORIES = ("starters", "mains", "breads", "rice", "sides", "desserts", "drinks")
-
-# How many dishes to name in one spoken answer. More than this and the caller
-# has stopped listening.
-SPOKEN_LIMIT = 4
+def _describe(business: Business, dishes: list[Dish]) -> str:
+    spoken = []
+    for dish in dishes[:MAX_SPOKEN]:
+        price = _price(business, dish)
+        spoken.append(f"{dish.name}, {price}" if price else dish.name)
+    return _join(spoken)
 
 
 def _join(items: list[str]) -> str:
-    """Natural list: 'a, b and c'."""
     if not items:
         return ""
     if len(items) == 1:
         return items[0]
-    return f"{', '.join(items[:-1])} and {items[-1]}"
+    return ", ".join(items[:-1]) + f" and {items[-1]}"
 
 
-# Spoken out, "1" and "2" read better as words.
-_SMALL_NUMBERS = {
-    1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
-    6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten",
-}
+# --- tools -------------------------------------------------------------------
 
 
-def _spoken_count(n: int) -> str:
-    return _SMALL_NUMBERS.get(n, str(n))
+def get_menu(business: Business, args: dict[str, Any]) -> str:
+    """A few dishes from one section, or the list of sections."""
+    dishes = _load(business)
+    if not dishes:
+        return "There is no menu loaded, so offer to check with the kitchen."
 
-
-def _describe(dishes: list[Dish], limit: int = SPOKEN_LIMIT) -> str:
-    shown = dishes[:limit]
-    text = _join([d.spoken() for d in shown])
-    remaining = len(dishes) - len(shown)
-    if remaining == 1:
-        text += ". There is one more if they want to hear it"
-    elif remaining > 1:
-        text += f". There are {_spoken_count(remaining)} more if they want to hear them"
-    return text
-
-
-# --- Tools -------------------------------------------------------------------
-
-
-def get_menu(args: dict[str, Any]) -> str:
     category = str(args.get("category", "")).strip().lower()
     if not category:
-        return (
-            "The menu has " + _join(list(CATEGORIES)) + ". "
-            "Ask about one of those, or ask what is popular."
-        )
-    if category not in CATEGORIES:
-        return f"There is no '{category}' section. We have {_join(list(CATEGORIES))}."
+        sections = sorted({d.section for d in dishes if d.section})
+        if not sections:
+            return f"We have {_describe(business, dishes)}, among other things."
+        return "The menu has " + _join(sections) + "."
 
-    dishes = [d for d in MENU if d.category == category]
-    return f"In {category} we have {_describe(dishes)}."
+    found = [d for d in dishes if d.section.lower() == category]
+    if not found:
+        return f"There is no {category} section. Offer to check with the kitchen."
+    return f"In {category} we have {_describe(business, found)}."
 
 
-def find_dishes(args: dict[str, Any]) -> str:
+def find_dishes(business: Business, args: dict[str, Any]) -> str:
+    """Search, with allergies handled by exclusion rather than by reasoning."""
+    dishes = _load(business)
+    if not dishes:
+        return "There is no menu loaded, so offer to check with the kitchen."
+
     query = str(args.get("query", "")).strip().lower()
-    diet = str(args.get("dietary", "")).strip().lower()
-    avoid = [a.strip().lower() for a in (args.get("avoid") or []) if str(a).strip()]
-    max_price = args.get("max_price")
-    spice = args.get("max_spice")
-
-    found = list(MENU)
     if query:
-        found = [
-            d for d in found
-            if query in d.name.lower() or query in d.description.lower()
-        ]
-    if diet in ("vegan",):
-        found = [d for d in found if d.vegan]
-    elif diet in ("vegetarian", "veg"):
-        found = [d for d in found if d.vegetarian]
-    elif diet in ("gluten free", "gluten-free", "gluten_free"):
-        found = [d for d in found if d.gluten_free]
-    if avoid:
-        found = [
-            d for d in found
-            if not any(a in allergen for allergen in d.allergens for a in avoid)
-        ]
+        dishes = [d for d in dishes if query in d.haystack()]
+
+    dietary = str(args.get("dietary", "")).strip().lower()
+    if dietary:
+        dishes = [d for d in dishes if dietary in " ".join(d.dietary).lower()]
+
+    for allergen in args.get("avoid") or []:
+        word = str(allergen).strip().lower()
+        if word:
+            dishes = [d for d in dishes if word not in d.haystack()]
+
+    max_price = args.get("max_price")
     if max_price is not None:
         try:
-            found = [d for d in found if d.price <= int(max_price)]
-        except (TypeError, ValueError):
-            return f"'{max_price}' is not a price I can read."
-    if spice is not None:
-        try:
-            found = [d for d in found if d.spice <= int(spice)]
-        except (TypeError, ValueError):
-            return f"'{spice}' is not a spice level I can read. Use 0, 1 or 2."
+            ceiling = Decimal(str(max_price))
+            dishes = [d for d in dishes if d.price is not None and d.price <= ceiling]
+        except (TypeError, ValueError, ArithmeticError):
+            return "I could not read that price. Ask them for a number."
 
-    if not found:
+    if not dishes:
         return "Nothing on the menu matches that. Offer to check with the kitchen."
-    return _describe(found)
+    return _describe(business, dishes) + "."
 
 
-def dish_details(args: dict[str, Any]) -> str:
+def dish_details(business: Business, args: dict[str, Any]) -> str:
+    """What one dish IS. Says what it contains, never what it is free of."""
     name = str(args.get("name", "")).strip().lower()
     if not name:
         return "Which dish?"
-    match = next((d for d in MENU if name in d.name.lower()), None)
+
+    dishes = _load(business, available_only=False)
+    match = next((d for d in dishes if name in d.name.lower()), None)
     if match is None:
         return f"'{args.get('name')}' is not on the menu."
 
-    spice = {0: "mild", 1: "medium", 2: "hot"}[match.spice]
-    parts = [f"{match.name} is {match.price} rupees. {match.description}. It is {spice}."]
-    tags = []
-    if match.vegan:
-        tags.append("vegan")
-    elif match.vegetarian:
-        tags.append("vegetarian")
-    if match.gluten_free:
-        tags.append("gluten free")
-    if tags:
-        parts.append(f"It is {_join(tags)}.")
-    if match.allergens:
-        parts.append(f"It contains {_join(list(match.allergens))}.")
+    price = _price(business, match)
+    parts = [f"{match.name} is {price}." if price else f"{match.name}."]
+    if match.description:
+        parts.append(f"{match.description}.")
+    if match.dietary:
+        parts.append(f"It is {_join(match.dietary)}.")
+    if match.notes:
+        parts.append(f"Noted on it: {_join(match.notes)}.")
+    parts.append("If they have an allergy, say the kitchen will go through it with them.")
     return " ".join(parts)
 
 
-def recommend_dishes(args: dict[str, Any]) -> str:
-    diet = str(args.get("dietary", "")).strip().lower()
-    picks = [d for d in MENU if d.popular]
-    if diet in ("vegan",):
-        picks = [d for d in MENU if d.vegan]
-    elif diet in ("vegetarian", "veg"):
-        picks = [d for d in picks if d.vegetarian] or [d for d in MENU if d.vegetarian]
+def recommend_dishes(business: Business, args: dict[str, Any]) -> str:
+    """Have an opinion. A list is not a recommendation."""
+    dishes = _load(business)
+    if not dishes:
+        return "There is no menu loaded, so offer to check with the kitchen."
 
-    if not picks:
+    diet = str(args.get("dietary", "")).strip().lower()
+    if diet:
+        dishes = [d for d in dishes if diet in " ".join(d.dietary).lower()]
+    if not dishes:
         return "Nothing stands out for that. Offer to ask the kitchen."
-    return "Most ordered: " + _describe(picks) + "."
+    return f"Try the {_describe(business, dishes)}."
 
 
 TOOLS: list[dict[str, Any]] = [
@@ -248,17 +205,15 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "name": "get_menu",
         "description": (
-            "List dishes in one section of the menu. Call with no category to "
-            "hear which sections exist."
+            "A few dishes from one section of the menu. Call with no category to "
+            "hear which sections exist. Never read the whole menu aloud."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "category": {
                     "type": "string",
-                    "description": (
-                        "One of: starters, mains, breads, rice, sides, desserts, drinks."
-                    ),
+                    "description": "A section name, as the venue wrote it.",
                 }
             },
             "required": [],
@@ -268,31 +223,25 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "name": "find_dishes",
         "description": (
-            "Search the menu. Use for dietary requirements, allergies, budgets "
-            "and 'something not too spicy' style requests."
+            "Search the menu. Use for dietary requirements, allergies and budgets. "
+            "Search with the allergen excluded rather than reasoning about it."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Free text, e.g. 'chicken', 'lentil'."},
+                "query": {"type": "string", "description": "Free text, e.g. 'chicken'."},
                 "dietary": {
                     "type": "string",
-                    "description": "One of: vegan, vegetarian, gluten free.",
+                    "description": "vegan, vegetarian, gluten free, halal, jain.",
                 },
                 "avoid": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": (
-                        "Allergens to exclude: dairy, nuts, gluten, fish, shellfish."
-                    ),
+                    "description": "Allergens to exclude: dairy, nuts, gluten, fish, shellfish.",
                 },
                 "max_price": {
                     "type": "integer",
-                    "description": "Most they want to spend, in rupees.",
-                },
-                "max_spice": {
-                    "type": "integer",
-                    "description": "0 mild, 1 medium, 2 hot. Filters to this level or below.",
+                    "description": "Most they want to spend, in the venue's currency.",
                 },
             },
             "required": [],
@@ -302,8 +251,8 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "name": "dish_details",
         "description": (
-            "Price, description, spice level, dietary tags and allergens for one "
-            "dish. Use whenever a caller asks what is in something."
+            "Price, description and anything noted on one dish. Use whenever a "
+            "caller asks what is in something."
         ),
         "parameters": {
             "type": "object",
@@ -314,7 +263,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "recommend_dishes",
-        "description": "Suggest popular dishes, optionally for a dietary requirement.",
+        "description": "Suggest something, optionally for a dietary requirement.",
         "parameters": {
             "type": "object",
             "properties": {

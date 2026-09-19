@@ -5,9 +5,15 @@
 #
 #   ./infra/gcp-setup.sh
 #
-# Sizing rationale: the server is a byte relay between two WebSockets. It does
-# no transcoding and no local inference -- all STT/LLM/TTS work happens inside
-# the AssemblyAI Voice Agent API -- so 2 vCPU / 2 GB is ample.
+# Sizing rationale: the relay itself is cheap -- it does no transcoding and no
+# local inference, since all STT/LLM/TTS work happens inside the AssemblyAI
+# Voice Agent API. What costs memory is Postgres, which now runs beside it and
+# holds the only copy of every booking. e2-medium (2 vCPU / 4 GB) leaves room
+# for the database, its page cache and a Docker build on the same box.
+#
+# e2-small (2 GB) still runs it, and was the right answer when this was a
+# stateless relay. It is tight once Postgres is in the picture: the first thing
+# that fails is a `docker compose build` during a deploy.
 #
 # Region is close to neutral for latency: the VM is one hop in a chain, so
 # caller -> VM -> AssemblyAI sums to roughly the same total wherever it sits.
@@ -18,7 +24,7 @@ PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 NAME="${NAME:-calling-agent}"
 REGION="${REGION:-asia-south1}"
 ZONE="${ZONE:-asia-south1-a}"
-MACHINE="${MACHINE:-e2-small}"
+MACHINE="${MACHINE:-e2-medium}"
 DISK_GB="${DISK_GB:-30}"
 
 if [[ -z "$PROJECT" ]]; then

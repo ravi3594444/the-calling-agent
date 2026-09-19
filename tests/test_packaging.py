@@ -114,3 +114,73 @@ def test_a_missing_static_dir_costs_the_page_and_not_the_process(tmp_path):
     (tmp_path / "index.html").write_text("<!-- sí existe -->")
     assert main._mount_static(real, tmp_path) is True
     assert [r for r in real.routes if getattr(r, "name", "") == "static"]
+
+
+# --- where the browser client is found ---------------------------------------
+#
+# These exist because `/` returned a 500 in the container for the first real
+# deploy. The image pip-installs the package into site-packages and copies
+# `static/` beside the WORKDIR, so both paths derived from `__file__` miss --
+# a layout no test had ever exercised, because every test runs from a checkout.
+
+
+def test_the_client_is_found_from_the_working_directory(tmp_path, monkeypatch):
+    """The container layout: package installed, static/ beside the WORKDIR."""
+    from calling_agent import main
+
+    (tmp_path / "static").mkdir()
+    monkeypatch.delenv("STATIC_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    # Point the __file__-relative candidates somewhere that cannot exist.
+    monkeypatch.setattr(main, "__file__", str(tmp_path / "nowhere" / "deep" / "main.py"))
+
+    assert main._static_dir() == tmp_path / "static"
+
+
+def test_static_dir_wins_over_everything(tmp_path, monkeypatch):
+    from calling_agent import main
+
+    explicit = tmp_path / "somewhere-else"
+    explicit.mkdir()
+    monkeypatch.setenv("STATIC_DIR", str(explicit))
+
+    assert main._static_dir() == explicit
+
+
+def test_a_missing_client_costs_the_page_and_nothing_else(tmp_path, monkeypatch):
+    """No index.html must not read as a broken server.
+
+    The API, the dashboard and every phone this relay carries work without it,
+    so the answer says what is missing instead of raising a 500 with nothing
+    in it.
+    """
+    from fastapi.testclient import TestClient
+
+    from calling_agent import main
+
+    monkeypatch.setattr(main, "STATIC_DIR", tmp_path / "not-here")
+    client = TestClient(main.app)
+
+    page = client.get("/")
+    assert page.status_code == 503
+    assert "STATIC_DIR" in page.json()["fix"]
+
+    # The icon browsers ask for regardless must not 500 either.
+    assert client.get("/favicon.ico").status_code == 204
+
+    # And the parts that do not need a file are unaffected.
+    assert client.get("/healthz").status_code == 200
+
+
+def test_the_client_is_served_from_a_checkout():
+    """The layout every developer runs. Would have passed all along -- which is
+    exactly why the container layout went unnoticed."""
+    from fastapi.testclient import TestClient
+
+    from calling_agent import main
+
+    if not (main.STATIC_DIR / "index.html").is_file():
+        import pytest
+
+        pytest.skip("no static/ in this install")
+    assert TestClient(main.app).get("/").status_code == 200

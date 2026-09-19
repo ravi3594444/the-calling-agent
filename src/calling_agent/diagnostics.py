@@ -16,8 +16,9 @@ from typing import Any
 import websockets
 
 from . import protocol as p
-from .agent_config import RESTAURANT, build_session_update
+from .agent_config import build_session_update
 from .agent_spec import AgentDefinition
+from .agent_tools import default_agent
 from .config import settings
 
 log = logging.getLogger(__name__)
@@ -40,13 +41,13 @@ def _payload_de_la_sesion(agent: "AgentDefinition | None") -> dict:
     it exists to pin: /diagnose then validates the restaurant while every real
     call sends something else.
     """
-    return build_session_update(p.ENCODING_PCM, agent=agent)
+    return build_session_update(p.ENCODING_PCM, agent=agent or default_agent())
 
 
 async def run_diagnostics(agent: "AgentDefinition | None" = None) -> dict:
     """Walk the real call path. `agent` is the definition a live call would use.
 
-    None means the restaurant, which is right only when no AGENT_FACTORY is
+    None means the default business, which is right only when no AGENT_FACTORY is
     configured: diagnosing the default while live calls send something else is
     a green /diagnose next to a phone that refuses every session.
     """
@@ -55,7 +56,7 @@ async def run_diagnostics(agent: "AgentDefinition | None" = None) -> dict:
     # 0. WHICH agent this is about. First, and outside every early return: a
     # report that does not name the agent it built can be read as covering one
     # it never touched.
-    steps.append(_step("agent", True, detail=f"diagnosing {(agent or RESTAURANT).name}"))
+    steps.append(_step("agent", True, detail=f"diagnosing {(agent or default_agent()).name}"))
 
     # 1. Is the key even configured?
     if not settings.assemblyai_api_key:

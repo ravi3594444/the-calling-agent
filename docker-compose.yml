@@ -1,15 +1,59 @@
-# Local: `docker compose up app` and open http://localhost:8080
+# Local:  `docker compose up` and open http://localhost:8080
 # Server: `docker compose --profile tls up -d` for automatic HTTPS via Caddy.
 services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tableline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tableline}
+      POSTGRES_DB: ${POSTGRES_DB:-tableline}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    # The app waits for this rather than crash-looping on boot.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tableline}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      # Loopback only: the database is never exposed off the host.
+      - "127.0.0.1:5432:5432"
+
   app:
     build: .
     restart: unless-stopped
     env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
       PORT: 8080
+      # The image installs the package into site-packages and copies static/
+      # beside the WORKDIR, so neither path relative to __file__ finds it.
+      STATIC_DIR: /app/static
+      DATABASE_URL: >-
+        postgresql+psycopg://${POSTGRES_USER:-tableline}:${POSTGRES_PASSWORD:-tableline}@db:5432/${POSTGRES_DB:-tableline}
+      MIGRATE_ON_START: "true"
     ports:
       # Bound to loopback; Caddy terminates TLS and proxies in.
       - "127.0.0.1:8080:8080"
+
+  # The sweeper and the message queue. Only needed once the web tier runs more
+  # than one process -- with RUN_JOBS_IN_PROCESS=true the app does this itself.
+  jobs:
+    build: .
+    profiles: ["jobs"]
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: >-
+        postgresql+psycopg://${POSTGRES_USER:-tableline}:${POSTGRES_PASSWORD:-tableline}@db:5432/${POSTGRES_DB:-tableline}
+      RUN_JOBS_IN_PROCESS: "false"
+    command: ["python", "-m", "calling_agent.jobs"]
 
   caddy:
     image: caddy:2-alpine
@@ -25,5 +69,6 @@ services:
       - caddy_config:/config
 
 volumes:
+  db_data:
   caddy_data:
   caddy_config:

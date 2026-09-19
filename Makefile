@@ -1,4 +1,4 @@
-.PHONY: help install dev test test-ui lint fmt docker-build docker-up deploy-up logs
+.PHONY: help install dev migrate demo jobs test test-ui lint fmt docker-build docker-up deploy-up logs
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s "$$(printf '\t')"
@@ -9,7 +9,16 @@ install:  ## Create .venv and install with dev extras
 dev:  ## Run with auto-reload on http://localhost:8080
 	.venv/bin/uvicorn calling_agent.main:app --reload --host 0.0.0.0 --port 8080
 
-test:  ## Run the test suite
+migrate:  ## Apply database migrations
+	.venv/bin/python -m calling_agent.cli migrate
+
+demo:  ## Create a venue to talk to, and print its dashboard link
+	.venv/bin/python -m calling_agent.cli demo
+
+jobs:  ## Run the sweeper and message queue on their own
+	.venv/bin/python -m calling_agent.jobs
+
+test:  ## Run the test suite (needs a Postgres; see TEST_DATABASE_URL)
 	.venv/bin/pytest tests/ -q
 
 test-ui:  ## Run client lifecycle and DOM interaction tests (npm ci first)

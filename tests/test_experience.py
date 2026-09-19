@@ -4,15 +4,15 @@ import asyncio
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
-from calling_agent import restaurant
+from calling_agent import agent_tools
 from calling_agent import session as session_module
 from calling_agent.agent_spec import AgentDefinition
 from calling_agent.config import settings
 from calling_agent.main import app
+from tests.conftest import committed, future_slot
 
 
 class Transport:
@@ -61,9 +61,28 @@ def test_public_experience_has_no_key_and_does_not_claim_live_readiness(monkeypa
     monkeypatch.setattr(settings, "assemblyai_api_key", "")
     body = TestClient(app).get("/experience").json()
     assert body["live_configured"] is False
-    assert body["booking_storage"] == "memory"
+    assert body["booking_storage"] == "postgres"
     assert "assemblyai_api_key" not in body
 
+
+
+def test_tool_results_reach_the_model_as_json_with_their_data():
+    """The API documents `result` as a JSON string, not a sentence.
+
+    Spoken is a str subclass, so json.dumps serialised it as the sentence
+    alone and dropped every field beside it. now() worked out the year and
+    could not say it; the model guessed one and booked into the past.
+    """
+    said = agent_tools.Spoken("It is 1:20 PM on Friday 18 September.", date="2026-09-18")
+    encoded = json.loads(session_module.encode_tool_result(said))
+
+    assert encoded["date"] == "2026-09-18", "the model still cannot see the year"
+    assert encoded["summary"] == "It is 1:20 PM on Friday 18 September."
+
+
+def test_a_result_carrying_nothing_is_sent_as_it_stands():
+    """Not every agent under this relay returns structured data."""
+    assert session_module.encode_tool_result("No tool named wibble.") == "No tool named wibble."
 
 
 def _agent_running(tool):
@@ -123,7 +142,10 @@ async def test_slow_tool_does_not_block_audio_or_interruption(monkeypatch):
         assert not upstream.sent
         release.set()
         await asyncio.wait_for(agent._tool_queue.join(), 1)
-        assert upstream.sent[0]["result"] == "Tool completed"
+        # The caller started a new turn while the tool was running, so the
+        # result is held rather than sent: the API's rule is reply.done must
+        # be the LATEST event, and input.speech.started is now later than it.
+        assert not upstream.sent
         assert [
             event["status"] for event in transport.events if event["type"] == "tool.activity"
         ] == ["started", "completed"]
@@ -137,8 +159,8 @@ async def test_timeout_guard_can_await_send_without_cancelling_itself(monkeypatc
     monkeypatch.setattr(session_module, "TOOL_RESULT_TIMEOUT", 0.01)
     upstream = Upstream()
     agent = session_module.AgentSession(Transport())
-    agent._reply_active = True
-    await agent._handle_tool_call(upstream, {"name": "restaurant_info", "call_id": "guard-1"})
+    agent._last_event = "reply.started"
+    await agent._handle_tool_call(upstream, {"name": "business_info", "call_id": "guard-1"})
     await asyncio.wait_for(agent._flush_guard, 1)
     assert upstream.sent[0]["call_id"] == "guard-1"
 
@@ -151,6 +173,7 @@ async def test_duplicate_tool_call_executes_side_effect_once():
         return "Booked once", False
 
     agent = _agent_running(action)
+    agent._last_event = "reply.done"  # results may be released
     upstream = Upstream()
     message = {"name": "book_table", "call_id": "same-id", "arguments": {}}
     await agent._handle_tool_call(upstream, message)
@@ -178,35 +201,57 @@ async def test_cancelled_pump_cleans_up_worker_and_guard():
     ]
 
 
-def test_receipts_only_accompany_actual_bookings(monkeypatch):
-    monkeypatch.setattr(restaurant, "BOOKINGS", restaurant.BookingStore())
-    tomorrow = (datetime.now(UTC) + timedelta(days=1)).date().isoformat()
-    rejected = restaurant.book_table({"name": "Alex", "party_size": 0})
-    assert not hasattr(rejected, "receipt")
-    result = restaurant.book_table(
-        {"name": "Alex", "party_size": 4, "date": tomorrow, "time": "19:00"}
+def test_structured_data_only_accompanies_actual_bookings(business):
+    """A refusal carries no booking data, so no UI can render one from it.
+
+    The in-memory book these used to check was replaced (PRD §17); the
+    behaviour they pin -- evidence comes from the write, never from a
+    hopeful read of the sentence -- is the same and still matters.
+    """
+    at = future_slot(business)
+
+    rejected = agent_tools.hold(business, {"date": at.date().isoformat(), "units": 0})
+    assert rejected.data.get("ok") is not True
+    assert "hold_id" not in rejected.data
+
+    held = agent_tools.hold(
+        business,
+        {"date": at.date().isoformat(), "time": at.strftime("%H:%M"), "units": 4},
     )
-    assert result.startswith("Booked:")
-    assert result.receipt["name"] == "Alex"
-    assert result.receipt["status"] == "confirmed"
-    reference = result.receipt["reference"]
-    cancelled = restaurant.cancel_booking({"reference": reference})
-    assert cancelled.receipt["status"] == "cancelled"
+    assert held.data["ok"]
+
+    booked = agent_tools.confirm(
+        business, {"hold_id": held.data["hold_id"], "name": "Alex", "phone": "+910000000123"}
+    )
+    assert booked.startswith("Booked:")
+    assert booked.data["name"] == "Alex"
+    assert booked.data["status"] == "confirmed"
+
+    cancelled = agent_tools.cancel_booking(
+        business, {"reference": booked.data["reference"], "name": "Alex"}
+    )
+    assert cancelled.data["status"] == "cancelled"
 
 
-def test_simultaneous_reservations_do_not_overbook(monkeypatch):
-    store = restaurant.BookingStore()
-    monkeypatch.setattr(restaurant, "BOOKINGS", store)
-    tomorrow = (datetime.now(UTC) + timedelta(days=1)).date().isoformat()
+def test_simultaneous_reservations_do_not_overbook(business):
+    """Eight callers, room for six. The counter is the assertion."""
+    at = future_slot(business)
     barrier = threading.Barrier(8)
 
     def book(index):
         barrier.wait()
-        return restaurant.book_table(
-            {"name": "Guest " + str(index), "date": tomorrow, "time": "19:00", "party_size": 2}
+        held = agent_tools.hold(
+            business,
+            {"date": at.date().isoformat(), "time": at.strftime("%H:%M"), "units": 2},
+        )
+        if not held.data.get("ok"):
+            return held
+        return agent_tools.confirm(
+            business, {"hold_id": held.data["hold_id"], "name": f"Guest {index}"}
         )
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(book, range(8)))
+
     assert sum(result.startswith("Booked:") for result in results) == 6
-    assert sum(booking.party_size for booking in store.bookings.values()) == 12
+    assert committed(business.id, at) == 12

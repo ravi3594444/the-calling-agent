@@ -26,9 +26,13 @@ export class CallSession {
     // so these have to survive a resume, or a dropped socket would silently
     // demote the caller to anonymous mid-call.
     passthrough = {},
+    // 'pcm' is the browser's own 24 kHz; 'pcmu' is 8 kHz mu-law, what a phone
+    // carries. It reaches /ws through passthrough, so both ends agree.
+    encoding = 'pcm',
   } = {}) {
     Object.assign(this, { emit, audioFactory, socketFactory, clock, setTimer, clearTimer, origin });
     this.passthrough = passthrough;
+    this.encoding = encoding;
     this.active = false;
     this.generation = 0;
     this.outputMuted = false;
@@ -87,6 +91,7 @@ export class CallSession {
       onError: (error) => {
         if (this.active && generation === this.generation) this.stop(error.message, true);
       },
+      encoding: this.encoding,
     });
     this.audio = audio;
     audio.setOutputMuted(this.outputMuted);

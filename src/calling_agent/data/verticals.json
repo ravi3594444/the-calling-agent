@@ -1,0 +1,90 @@
+{
+  "_comment": [
+    "Per-vertical defaults. Data, not code: adding a vertical is a key here,",
+    "never a branch in the engine. Each entry is deep-merged UNDER a business's",
+    "own config, so a venue can override any of it without us knowing about it.",
+    "PRD §15: no `if business_id == N` anywhere -- this file is how a whole",
+    "class of business gets different behaviour without naming one."
+  ],
+  "default": {
+    "capacity": {
+      "unit_label_singular": "place",
+      "unit_label_plural": "places",
+      "turn_minutes": 60
+    },
+    "agent": {
+      "vertical_fragment": "You take bookings and answer questions about the business."
+    },
+    "features": {"menu": false}
+  },
+  "restaurant": {
+    "capacity": {
+      "unit_label_singular": "cover",
+      "unit_label_plural": "covers",
+      "turn_minutes": 90
+    },
+    "policy": {"auto_approve_max_party": 8, "max_party_size": 12},
+    "agent": {
+      "vertical_fragment": "You take table bookings and answer questions about the food.",
+      "booking_noun": "table",
+      "party_noun": "people"
+    },
+    "features": {"menu": true}
+  },
+  "dental": {
+    "capacity": {
+      "unit_label_singular": "appointment",
+      "unit_label_plural": "appointments",
+      "turn_minutes": 30
+    },
+    "policy": {"auto_approve_max_party": 1, "max_party_size": 2, "min_lead_minutes": 60},
+    "agent": {
+      "vertical_fragment": "You book appointments and answer questions about treatments, never clinical advice.",
+      "booking_noun": "appointment",
+      "party_noun": "patients"
+    },
+    "features": {"menu": false}
+  },
+  "salon": {
+    "capacity": {
+      "unit_label_singular": "appointment",
+      "unit_label_plural": "appointments",
+      "turn_minutes": 45
+    },
+    "policy": {"auto_approve_max_party": 2, "max_party_size": 6},
+    "agent": {
+      "vertical_fragment": "You book appointments and answer questions about services and prices.",
+      "booking_noun": "appointment",
+      "party_noun": "people"
+    },
+    "features": {"menu": true}
+  },
+  "garage": {
+    "capacity": {
+      "unit_label_singular": "job",
+      "unit_label_plural": "jobs",
+      "turn_minutes": 60
+    },
+    "policy": {"auto_approve_max_party": 1, "max_party_size": 2, "min_lead_minutes": 120},
+    "agent": {
+      "vertical_fragment": "You book vehicles in and answer questions about services and turnaround. Never quote a repair price you were not given.",
+      "booking_noun": "slot",
+      "party_noun": "vehicles"
+    },
+    "features": {"menu": true}
+  },
+  "clinic": {
+    "capacity": {
+      "unit_label_singular": "appointment",
+      "unit_label_plural": "appointments",
+      "turn_minutes": 20
+    },
+    "policy": {"auto_approve_max_party": 1, "max_party_size": 2, "min_lead_minutes": 30},
+    "agent": {
+      "vertical_fragment": "You book appointments. You never give clinical advice, and anything urgent you direct to emergency care.",
+      "booking_noun": "appointment",
+      "party_noun": "patients"
+    },
+    "features": {"menu": false}
+  }
+}

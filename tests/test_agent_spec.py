@@ -17,6 +17,7 @@ from calling_agent.agent_spec import AgentDefinition
 from calling_agent.config import settings
 from calling_agent.session import AgentSession
 from calling_agent.transport.base import AudioTransport
+from tests.conftest import make_business
 
 
 def _definition(**overrides) -> AgentDefinition:
@@ -89,9 +90,9 @@ def test_definition_voice_outranks_the_configured_default(monkeypatch):
     assert session["output"]["voice"] == "diego"
 
 
-def test_session_defaults_to_the_restaurant_when_given_no_agent():
-    """Every existing caller passes nothing, and must be unchanged."""
-    assert AgentSession(_Transport())._agent.name == "restaurant"
+def test_session_defaults_to_the_default_business_when_given_no_agent():
+    """Passing no agent resolves DEFAULT_BUSINESS_SLUG, not a module constant."""
+    assert AgentSession(_Transport())._agent.name == "business:default-test-venue"
 
 
 def test_session_keeps_the_agent_it_was_given():
@@ -333,16 +334,15 @@ def test_experience_names_the_configured_agent_not_the_restaurant(monkeypatch):
     assert body["agent"] == "dairy"
 
 
-def test_experience_falls_back_to_the_restaurant_with_no_factory(monkeypatch):
+def test_experience_falls_back_to_the_default_business_with_no_factory(monkeypatch):
     from fastapi.testclient import TestClient
 
     from calling_agent.main import app
 
-    monkeypatch.setattr(settings, "restaurant_name", "The Copper Kettle")
     monkeypatch.setattr(settings, "agent_factory", "")
     body = TestClient(app).get("/experience").json()
     assert body["restaurant"] == "The Copper Kettle"
-    assert body["agent"] == "restaurant"
+    assert body["agent"] == "business:default-test-venue"
 
 
 def _dairy_factory(params):
@@ -374,3 +374,56 @@ def test_diagnose_reports_which_agent_it_built(monkeypatch):
     body = TestClient(app).get("/diagnose").json()
     paso = next(s for s in body["steps"] if s["step"] == "agent")
     assert "dairy" in paso["detail"]
+
+
+def test_the_prompt_carries_the_connect_date_so_no_round_trip_is_needed(business):
+    """The year has to be in the prompt, or the model asks a tool for it.
+
+    Asking now() before every booking cost a tool call, a wait for reply.done
+    and a second inference -- several seconds of phone silence to learn
+    something that had not changed since the caller said hello.
+    """
+    from datetime import UTC, datetime
+
+    from calling_agent import formatting
+    from calling_agent.agent_config import build_prompt_for
+
+    today = formatting.local(business, datetime.now(UTC)).date()
+    prompt = " ".join(build_prompt_for(business).split())
+
+    assert today.isoformat() in prompt, "the model still has to ask what year it is"
+    assert "now() only when" in prompt, "nothing stops it asking anyway"
+
+
+# --- what the agent knows about the place ------------------------------------
+
+
+def test_venue_facts_reach_the_prompt_and_only_the_ones_that_are_set():
+    """An empty field is not "no". A venue that left parking blank may have
+    plenty, so the block lists only what the owner wrote and the standing
+    rule -- offer to check -- covers the rest."""
+    from calling_agent.agent_config import build_prompt_for, venue_block_for
+
+    business = make_business(
+        config={"venue": {"parking": "Free on the street after 6", "children": ""}}
+    )
+    block = venue_block_for(business)
+    assert "Parking: Free on the street after 6" in block
+    assert "Children" not in block, "a blank field must not be listed as anything"
+    assert "offer to check" in block
+
+    prompt = " ".join(build_prompt_for(business).split())
+    assert "ABOUT THE PLACE" in prompt
+
+    silent = make_business()
+    assert venue_block_for(silent) == "", "nothing set, nothing said"
+    assert "ABOUT THE PLACE" not in build_prompt_for(silent)
+
+
+def test_business_info_answers_from_the_venue_fields():
+    from calling_agent import agent_tools
+
+    business = make_business(config={"venue": {"wheelchair_access": "Step-free from the street"}})
+    said = agent_tools.business_info(business, {})
+    assert "Wheelchair access: Step-free from the street." in said
+    assert said.data["venue"] == {"Wheelchair access": "Step-free from the street"}

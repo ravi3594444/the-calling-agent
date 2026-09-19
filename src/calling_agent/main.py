@@ -1,16 +1,33 @@
-"""FastAPI app: serves the browser client and bridges its audio to the agent."""
+"""FastAPI app: the voice relay, the dashboard, the tool API and telephony.
 
+Four surfaces, one process:
+
+    /ws              a browser microphone bridged to an agent session
+    /twilio/*        a phone call bridged to the same agent session
+    /api/*           the dashboard (PRD §16b)
+    /api/tools/*     the agent's own tool contract, for other systems (PRD §8)
+
+The relay itself is unchanged and is still the hardest code here. What this
+file adds is the seam where a connection becomes a TENANT: a dialled number, a
+dashboard token or a slug, resolved once at the edge and passed down.
+"""
+
+from __future__ import annotations
+
+import asyncio
 import importlib
 import logging
 import os
 from collections.abc import Mapping
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Response, WebSocket
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .agent_config import KNOWN_VOICES, RESTAURANT
+from . import agent_tools, db, jobs
+from .agent_config import KNOWN_VOICES
 from .agent_spec import AgentDefinition
 from .config import settings
 from .diagnostics import run_diagnostics
@@ -23,26 +40,30 @@ logging.basicConfig(
 )
 log = logging.getLogger("calling_agent")
 
+
 def _static_dir() -> Path:
-    """Where the browser client lives, from a checkout OR an installed wheel.
+    """Where the browser clients live, from a checkout, a wheel, or a container.
 
-    `parents[2]` is the repo root from `src/calling_agent/main.py` and works
-    for a checkout and an editable install. Installed normally the same
-    expression points at `site-packages/../..`, so StaticFiles raises at
-    import and the server does not start at all -- the failure mode when
-    another project installs this package to serve its own agent through it.
-
-    STATIC_DIR names the directory explicitly, which is what a container that
-    pip-installs from git needs.
+    Four candidates, most explicit first. The WORKING DIRECTORY one is what a
+    container needs: the image pip-installs the package into site-packages and
+    copies `static/` next to the WORKDIR, so neither path relative to
+    `__file__` exists. Without it `/` served a FileResponse for a file that was
+    not there, which is a 500 with nothing useful in it -- the failure this
+    function's docstring had warned about since before it could happen.
     """
-    override = os.getenv("STATIC_DIR", "").strip()
-    if override:
-        return Path(override)
-    repo = Path(__file__).resolve().parents[2] / "static"
-    if repo.is_dir():
-        return repo
-    # Last resort: alongside the package, for a wheel that ships it.
-    return Path(__file__).resolve().parent / "static"
+    candidates = [
+        Path(os.getenv("STATIC_DIR", "").strip() or "/nonexistent"),
+        # A checkout or an editable install: src/calling_agent/main.py -> repo.
+        Path(__file__).resolve().parents[2] / "static",
+        # A container: the image copies static/ beside the working directory.
+        Path.cwd() / "static",
+        # A wheel that ships it inside the package.
+        Path(__file__).resolve().parent / "static",
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return candidates[1]
 
 
 STATIC_DIR = _static_dir()
@@ -51,23 +72,10 @@ STATIC_DIR = _static_dir()
 def _mount_static(app: FastAPI, directory: Path) -> bool:
     """Mount the browser client if it is there, and carry on if it is not.
 
-    `StaticFiles(check_dir=True)` raises AT IMPORT, so a missing directory did
-    not cost the page -- it cost the process. `import calling_agent.main`
-    raised, which means the server never started, `/healthz` never answered,
-    and a consumer's tests could not even import the module to check anything
-    else.
-
-    And a plain `pip install` lands exactly there: the wheel does not ship
-    `static/` (it lives at the repo root, beside `src/`, not inside the
-    package), so with no STATIC_DIR set both branches of `_static_dir` miss and
-    the last resort points at a directory that cannot exist. The docstring
-    above has described this failure since the day the override was added --
-    the override dodges it, it never stopped being true without one.
-
-    A missing UI must cost the UI. The websocket, `/healthz` and every agent
-    this relay carries do not read a single file from here; the browser client
-    is one of the transports, not the product. So: no directory, no `/static`,
-    a warning that names the path, and a phone that still answers.
+    `StaticFiles(check_dir=True)` raises AT IMPORT, so a missing directory
+    would cost the process rather than the page: the server never starts,
+    /healthz never answers, and every phone this relay carries stops ringing
+    over a missing HTML file. A missing UI must cost only the UI.
     """
     if not directory.is_dir():
         log.warning(
@@ -80,26 +88,54 @@ def _mount_static(app: FastAPI, directory: Path) -> bool:
     return True
 
 
-app = FastAPI(title="calling-agent", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Migrate if asked, then start the background jobs.
+
+    Migrations are opt-in because in production they belong to the deploy, not
+    to whichever web process happened to boot first. In development, one
+    variable saves a step.
+    """
+    if settings.migrate_on_start:
+        applied = await asyncio.to_thread(db.migrate)
+        log.info("migrations applied: %s", applied or "none")
+
+    worker = None
+    if settings.run_jobs_in_process:
+        worker = asyncio.create_task(jobs.run_forever())
+
+    yield
+
+    if worker is not None:
+        worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await worker
+
+
+app = FastAPI(title="tableline", version="1.0.0", lifespan=lifespan)
 _mount_static(app, STATIC_DIR)
+
+from .api import (  # noqa: E402
+    dashboard_router,
+    manage_router,
+    telephony_router,
+    tools_router,
+)
+
+app.include_router(dashboard_router)
+app.include_router(tools_router)
+app.include_router(telephony_router)
+app.include_router(manage_router)
 
 
 def _build_agent(params: Mapping[str, str] | None = None) -> AgentDefinition | None:
-    """Resolve AGENT_FACTORY for one connection, or None for the restaurant.
+    """Resolve AGENT_FACTORY for one connection, or None for the default agent.
 
     Called per connection rather than at import, because a factory that binds
     an agent to its caller (an account, a phone number, a call id) must not
-    hand the first caller's identity to everyone after them. A factory that
-    ignores the distinction loses nothing by being called again.
+    hand the first caller's identity to everyone after them.
 
-    The factory receives the connection's query parameters as its one
-    argument. That is the only channel by which who-is-calling can reach an
-    agent WITHOUT passing through the conversation: a caller cannot talk their
-    way into a different identity, because the identity was fixed before they
-    said anything and the model never sees this mapping. A telephony transport
-    puts the caller id here for the same reason.
-
-    A broken factory serves the restaurant rather than dropping the call: a
+    A broken factory serves the default agent rather than dropping the call: a
     typo in a deployment variable should not be the difference between a phone
     that answers and one that rings out.
     """
@@ -111,10 +147,6 @@ def _build_agent(params: Mapping[str, str] | None = None) -> AgentDefinition | N
         factory = getattr(importlib.import_module(module_path), attribute)
         agent = factory(dict(params or {}))
     except Exception:  # noqa: BLE001 - never drop a call over config
-        # log.exception, not log.error: this handler covers a dynamic import, an
-        # attribute lookup and arbitrary third-party code, and all three end in
-        # the same fallback. Without the traceback, "the factory failed" is the
-        # only thing anyone ever learns about any of them.
         log.exception("AGENT_FACTORY %r failed; serving the default agent", spec)
         return None
     if not isinstance(agent, AgentDefinition):
@@ -126,10 +158,12 @@ def _build_agent(params: Mapping[str, str] | None = None) -> AgentDefinition | N
 @app.get("/healthz")
 async def healthz() -> dict:
     """Liveness probe. Reports config validity without leaking the key."""
+    database_ok, database_detail = await asyncio.to_thread(db.healthy)
     return {
-        "status": "ok",
+        "status": "ok" if database_ok else "degraded",
         "api_key_configured": bool(settings.assemblyai_api_key),
         "upstream": settings.assemblyai_agent_ws_url,
+        "database": {"ok": database_ok, "detail": database_detail},
     }
 
 
@@ -144,24 +178,23 @@ async def voices() -> dict:
 
 
 @app.get("/experience")
-async def experience() -> dict:
-    """Public product context, with no secrets and no billable upstream call.
-
-    The name comes from the CONFIGURED agent, not from the restaurant settings:
-    a relay serving someone else's agent otherwise labels their product with
-    the restaurant's name. Resolved without connection parameters, so a factory
-    that varies by caller answers for its default caller — which is all a page
-    can ask before anyone has called.
-    """
-    agente = _build_agent() or RESTAURANT
+async def experience(business: str | None = None) -> dict:
+    """Public product context, with no secrets and no billable upstream call."""
+    agent = _build_agent() or await asyncio.to_thread(_agent_for_slug, business)
+    database_ok, _ = await asyncio.to_thread(db.healthy)
     return {
-        "restaurant": agente.display_name or settings.restaurant_name,
-        "agent": agente.name,
-        "cuisine": settings.restaurant_cuisine,
+        "restaurant": agent.display_name or "Tableline",
+        "agent": agent.name,
         "live_configured": bool(settings.assemblyai_api_key),
-        "booking_storage": "memory",
+        "booking_storage": "postgres" if database_ok else "unavailable",
         "interruptions": settings.allow_interruptions,
     }
+
+
+def _agent_for_slug(slug: str | None) -> AgentDefinition:
+    if slug:
+        return agent_tools.agent_for(slug=slug)
+    return agent_tools.default_agent()
 
 
 @app.get("/diagnose")
@@ -171,15 +204,38 @@ async def diagnose() -> dict:
     Read-only apart from opening one short agent session, which is billable
     but brief. Open this in a browser when the page will not talk.
     """
-    # The CONFIGURED agent, not the restaurant: diagnosing a payload that no
-    # live call ever sends is how /diagnose reports a healthy session while
-    # every real one is refused for a malformed prompt or tool declaration.
     return await run_diagnostics(agent=_build_agent())
 
 
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+async def index() -> Response:
+    """The browser client.
+
+    A missing file answers with what is wrong and where it looked, rather than
+    a 500: the API, the dashboard and every phone this relay carries work
+    perfectly well without it, so it must be obvious that only the page is
+    missing.
+    """
+    page = STATIC_DIR / "index.html"
+    if not page.is_file():
+        return JSONResponse(
+            {
+                "error": "the browser client is not installed",
+                "looked_in": str(STATIC_DIR),
+                "fix": "set STATIC_DIR to the directory containing index.html",
+            },
+            status_code=503,
+        )
+    return FileResponse(page)
+
+
+@app.get("/dashboard")
+async def dashboard_page() -> Response:
+    """The staff dashboard. Opened from a long secret link, saved to a home screen."""
+    page = STATIC_DIR / "dashboard" / "index.html"
+    if not page.is_file():
+        return JSONResponse({"error": "dashboard is not installed"}, status_code=404)
+    return FileResponse(page)
 
 
 # Browsers request these regardless of the inline <link rel="icon">, and the
@@ -187,33 +243,50 @@ async def index() -> FileResponse:
 # load logs two 404s.
 @app.get("/favicon.ico")
 @app.get("/favicon.png")
-async def favicon() -> FileResponse:
-    return FileResponse(STATIC_DIR / "favicon.svg", media_type="image/svg+xml")
+async def favicon() -> Response:
+    icon = STATIC_DIR / "favicon.svg"
+    if not icon.is_file():
+        return Response(status_code=204)
+    return FileResponse(icon, media_type="image/svg+xml")
 
 
 @app.websocket("/ws")
-async def ws(websocket: WebSocket, resume: str | None = None, voice: str | None = None) -> None:
+async def ws(
+    websocket: WebSocket,
+    resume: str | None = None,
+    voice: str | None = None,
+    business: str | None = None,
+    encoding: str = "pcm",
+) -> None:
     """Bridge one browser to one agent session.
 
     `resume` carries a session id the client saw earlier. The client holds it
     rather than the server because on a serverless platform the instance that
-    started the call is not necessarily the one handling the reconnect -- there
-    is no server-side memory to look it up in.
+    started the call is not necessarily the one handling the reconnect.
 
     `voice` overrides AGENT_VOICE for this call only, so voices can be compared
     by ear without a redeploy.
 
-    Every query parameter, named or not, is handed to AGENT_FACTORY. What an
-    agent makes of them is its own business; this relay does not read them.
+    `business` names the tenant. A browser has no dialled number, so it says
+    which venue it is calling; without one, DEFAULT_BUSINESS_SLUG decides.
+
+    `encoding=pcmu` runs the call at 8 kHz mu-law -- telephone band, telephone
+    codec -- so the browser client can be used to judge how the agent will
+    sound on a real line before there is a real line.
     """
     await websocket.accept()
     client = websocket.client.host if websocket.client else "unknown"
     log.info("browser connected from %s%s", client, " (resuming)" if resume else "")
+
+    agent = _build_agent(websocket.query_params)
+    if agent is None:
+        agent = await asyncio.to_thread(_agent_for_slug, business)
+
     await AgentSession(
-        BrowserTransport(websocket),
+        BrowserTransport(websocket, encoding=encoding),
         resume_session_id=resume,
         voice=voice,
-        agent=_build_agent(websocket.query_params),
+        agent=agent,
     ).run()
     log.info("session for %s ended", client)
 
