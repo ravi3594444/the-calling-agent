@@ -181,6 +181,25 @@ def call_record(business):
     return row[0]
 
 
+def drain(worker, *, passes: int = 400) -> int:
+    """Run a paginated queue worker until it has nothing left to do.
+
+    The test database is shared by the whole session and never truncated, so
+    thousands of rows from earlier tests -- and earlier RUNS -- sit ahead of
+    the one a test just wrote. `send_queued` and `run_due_tasks` each take a
+    page at a time, so a single call works through somebody else's backlog
+    and never reaches the row under test: the assertion then fails for a
+    reason that has nothing to do with what it is testing.
+    """
+    total = 0
+    for _ in range(passes):
+        done = int(worker() or 0)
+        if not done:
+            return total
+        total += done
+    raise AssertionError(f"{worker.__name__} still had work after {passes} passes")
+
+
 def future_slot(business, *, days_ahead: int = 2, hour: int = 19, minute: int = 0) -> datetime:
     """A bookable instant, expressed in the business's own timezone."""
     local_day = datetime.now(business.tz).date() + timedelta(days=days_ahead)
@@ -210,6 +229,7 @@ def committed(business_id, slot_start) -> int:
 
 
 __all__ = [
+    "drain",
     "make_business",
     "future_slot",
     "committed",

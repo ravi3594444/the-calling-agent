@@ -12,7 +12,7 @@ import pytest
 
 from calling_agent import availability, bookings, holds, notifications
 from calling_agent.db import readonly
-from tests.conftest import committed, future_slot, make_business
+from tests.conftest import committed, drain, future_slot, make_business
 from tests.conftest import test_phone_number as a_number
 
 
@@ -336,10 +336,7 @@ def test_the_sender_is_a_plug_not_a_hardcoded_provider():
     before = settings.sms_provider
     settings.sms_provider = "test-carrier"
     try:
-        # Drained rather than sent once: the table accumulates across the
-        # session, and send_queued takes a page at a time, so a single call
-        # quietly stopped covering this test's own message.
-        assert sum(iter(lambda: notifications.send_queued(), 0)) >= 1
+        assert drain(notifications.send_queued) >= 1
     finally:
         settings.sms_provider = before
         notifications.PROVIDERS.pop("test-carrier", None)
@@ -427,7 +424,7 @@ def test_a_task_stranded_by_a_restart_is_picked_up_again(business):
     from calling_agent import jobs
 
     stranded = _queue_task(business, reason="digest", status="running", attempts=1)
-    jobs.run_due_tasks()
+    drain(jobs.run_due_tasks)
     assert _task_status(stranded).status == "done"
 
 
@@ -446,7 +443,7 @@ def test_a_failed_task_is_retried_until_its_attempts_run_out(business, monkeypat
     try:
         task_id = _queue_task(business, reason="flaky_test_task")
         for _ in range(5):
-            jobs.run_due_tasks()
+            drain(jobs.run_due_tasks)
             _age_task(task_id)
 
         assert len(tries) == 3, "tried three times, then stopped"
@@ -473,7 +470,7 @@ def test_a_task_with_no_handler_is_not_retried_forever(business):
     from calling_agent import jobs
 
     task_id = _queue_task(business, reason="nonexistent_reason")
-    jobs.run_due_tasks()
+    drain(jobs.run_due_tasks)
     assert _task_status(task_id).status == "abandoned"
 
 
@@ -615,7 +612,7 @@ def test_a_voice_message_inside_the_window_is_dialled(monkeypatch):
     always = make_business(config={"outbound": {"window_start": "00:00", "window_end": "23:59"}})
     message_id = _queue_voice(always)
 
-    assert notifications.send_queued() >= 1
+    assert drain(notifications.send_queued) >= 1
     row = _message(message_id)
     assert row.status == "sent"
     assert row.provider_id.startswith("log-call-"), "went to the dialler, not the SMS provider"
@@ -632,7 +629,7 @@ def test_a_voice_message_outside_the_window_waits_for_it(monkeypatch):
     }})
     message_id = _queue_voice(shut)
 
-    notifications.send_queued()
+    drain(notifications.send_queued)
     row = _message(message_id)
     assert row.status == "queued", "still waiting"
     assert row.provider_id is None
@@ -643,7 +640,7 @@ def test_outbound_calls_switched_off_fall_back_to_a_text(monkeypatch):
     _dialler_ready(monkeypatch)
     off = make_business(config={"outbound": {"enabled": False}})
     message_id = _queue_voice(off)
-    notifications.send_queued()
+    drain(notifications.send_queued)
     assert _message(message_id).channel == "sms"
 
 
@@ -654,7 +651,7 @@ def test_an_unanswered_call_rings_again_then_becomes_a_text(monkeypatch):
         "window_start": "00:00", "window_end": "23:59", "max_attempts": 2,
     }})
     message_id = _queue_voice(always)
-    notifications.send_queued()
+    drain(notifications.send_queued)
     first = _message(message_id)
     assert first.attempts == 1
 
@@ -671,7 +668,7 @@ def test_an_unanswered_call_rings_again_then_becomes_a_text(monkeypatch):
     with transaction() as conn:
         conn.execute(text("UPDATE messages SET send_after = NULL WHERE id = :i"),
                      {"i": str(message_id)})
-    notifications.send_queued()
+    drain(notifications.send_queued)
     rung_twice = _message(message_id)
     assert rung_twice.attempts == 2
     notifications.call_ended(rung_twice.provider_id, "no-answer")
@@ -684,7 +681,7 @@ def test_an_answered_call_is_delivered_and_not_retried(monkeypatch):
     _dialler_ready(monkeypatch)
     always = make_business(config={"outbound": {"window_start": "00:00", "window_end": "23:59"}})
     message_id = _queue_voice(always)
-    notifications.send_queued()
+    drain(notifications.send_queued)
     notifications.call_ended(_message(message_id).provider_id, "completed")
     assert _message(message_id).status == "delivered"
 
