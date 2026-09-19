@@ -4,12 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tableline</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400&display=swap" rel="stylesheet">
 <style>
+/* Already shipped with the app: no font service on the critical path. */
+@font-face{font-family:Manrope;src:url('/static/fonts/manrope-400.woff2') format('woff2');font-weight:400;font-display:swap}
+@font-face{font-family:Manrope;src:url('/static/fonts/manrope-500.woff2') format('woff2');font-weight:500;font-display:swap}
+@font-face{font-family:Manrope;src:url('/static/fonts/manrope-600.woff2') format('woff2');font-weight:600;font-display:swap}
+@font-face{font-family:Manrope;src:url('/static/fonts/manrope-700.woff2') format('woff2');font-weight:700;font-display:swap}
 /* ---------- themes ---------- */
 :root{
+  color-scheme:light;
   --page:#F4F3F0; --card:#FFF; --band:#FAFAF8;
   --line:#E3E1DC; --line-2:#EFEDE9;
   --ink:#1A1A17; --ink-2:#605E56; --ink-3:#8B8880;
@@ -20,6 +23,7 @@
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]):not([data-theme="black"]){
+    color-scheme:dark;
     --page:#151412; --card:#1D1C1A; --band:#232120;
     --line:#302E2B; --line-2:#292725;
     --ink:#EFECE5; --ink-2:#A6A198; --ink-3:#77726A;
@@ -30,6 +34,7 @@
   }
 }
 :root[data-theme="dark"]{
+  color-scheme:dark;
   --page:#151412; --card:#1D1C1A; --band:#232120;
   --line:#302E2B; --line-2:#292725;
   --ink:#EFECE5; --ink-2:#A6A198; --ink-3:#77726A;
@@ -39,6 +44,7 @@
   --fill:#413E39;
 }
 :root[data-theme="black"]{
+  color-scheme:dark;
   --page:#000; --card:#0A0A0A; --band:#141414;
   --line:#2C2C2C; --line-2:#1E1E1E;
   --ink:#FFFFFF; --ink-2:#ADADAB; --ink-3:#757573;
@@ -65,18 +71,18 @@
 
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--page);color:var(--ink);
-  font-family:"Instrument Sans",system-ui,-apple-system,sans-serif;
+  font-family:Manrope,system-ui,-apple-system,sans-serif;
   font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
 button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 a{color:inherit}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.9em}
+.mono{font-family:ui-monospace,monospace;font-size:.9em}
 .hide{display:none!important}
-@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after,*::backdrop{transition:none!important;animation:none!important;scroll-behavior:auto!important}}
 
 /* ---------- bar ---------- */
 .bar{background:var(--card);border-bottom:1px solid var(--line)}
-.bar-in{max-width:1140px;margin:0 auto;padding:16px 28px;display:flex;align-items:center;gap:26px}
+.bar-in{max-width:1140px;margin:0 auto;padding:16px 28px;display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:14px 22px}
 .brand{display:flex;align-items:center;gap:11px;font-weight:700;font-size:18px}
 .mark{width:30px;height:30px;border-radius:7px;background:var(--accent);display:grid;place-items:center;flex:none}
 .mark svg{width:16px;height:16px;stroke:var(--on-accent);fill:none;stroke-width:2;stroke-linecap:round}
@@ -87,7 +93,7 @@ nav button.on{color:var(--ink);border-color:var(--line)}
 .acct{text-align:right;line-height:1.3}
 .acct b{display:block;font-size:14.5px;font-weight:600}
 .acct span{font-size:13px;color:var(--ink-3)}
-.theme{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;margin-left:4px}
+.theme{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;grid-column:3;justify-self:end}
 .theme button{padding:6px 10px;font-size:13px;color:var(--ink-3);border-right:1px solid var(--line)}
 .theme button:last-child{border-right:none}
 .theme button.on{background:var(--band);color:var(--ink);font-weight:600}
@@ -126,7 +132,6 @@ tr.past td{color:var(--ink-3)}
 .pill.act{border-color:var(--gold-line);color:var(--gold);background:var(--gold-bg)}
 .pill.ok{border-color:var(--ok-line);color:var(--ok);background:var(--ok-bg)}
 .pill.no{border-color:var(--no-line);color:var(--no);background:var(--no-bg)}
-tr.unseen td:first-child{box-shadow:inset 3px 0 0 var(--gold)}
 
 /* time-block header inside the bookings table */
 tr.block td{
@@ -267,13 +272,13 @@ tr.missed td{color:var(--ink-3)}
 /* ---- touch targets ---- */
 @media(pointer:coarse){
   .btn{min-height:44px;padding:11px 16px}
-  .btn.sm{min-height:40px;padding:9px 13px}
+  .btn.sm{min-height:44px;padding:9px 13px}
   .seg2 button{min-height:44px}
   .sw{width:50px;height:30px}
   .sw::after{width:24px;height:24px}
   .sw.on::after{left:23px}
   nav button{min-height:44px}
-  .tabs button{min-height:40px}
+  .tabs button{min-height:44px}
   tbody tr.b td{padding-top:16px;padding-bottom:16px}
 }
 
@@ -314,15 +319,18 @@ tr.missed td{color:var(--ink-3)}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px 26px}
 /* One sheet, four callers. <dialog> rather than a div because focus
    trapping, Esc and inertness of the page behind come with the element. */
-dialog.sheet{border:1px solid var(--line);border-radius:14px;padding:0;background:var(--card);
-  color:var(--ink);width:min(520px,calc(100vw - 32px));box-shadow:0 18px 50px rgba(0,0,0,.28)}
+dialog.sheet{border:1px solid var(--line);border-radius:14px;padding:0;margin:auto;background:var(--card);
+  color:var(--ink);width:min(520px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow-y:auto;
+  box-shadow:0 18px 50px rgba(0,0,0,.28)}
+dialog.sheet[open]{animation:sheet-in .22s cubic-bezier(.2,.8,.2,1)}
 dialog.sheet::backdrop{background:rgba(0,0,0,.45)}
-dialog.sheet .card-h{margin:0}
-dialog.sheet form{margin:0}
-dialog.sheet .card-b{padding:20px 22px}
+dialog.sheet[open]::backdrop{animation:backdrop-in .2s ease-out}
+dialog.sheet .card-h{margin:0;flex-shrink:0}
+dialog.sheet form{margin:0;display:flex;flex-direction:column;max-height:calc(100dvh - 34px)}
+dialog.sheet .card-b{padding:20px 22px;min-height:0;overflow-y:auto;overscroll-behavior:contain}
 dialog.sheet .sheet-acts{display:flex;gap:10px;justify-content:flex-end;
-  padding:14px 22px;border-top:1px solid var(--line)}
-dialog.sheet .sheet-err{color:var(--bad,#b4331f);font-size:14px;margin-top:12px;display:none}
+  padding:14px 22px;border-top:1px solid var(--line);flex-shrink:0;background:var(--card)}
+dialog.sheet .sheet-err{color:var(--no);font-size:14px;margin-top:12px;display:none}
 dialog.sheet .sheet-err.on{display:block}
 /* A booking this device has not opened yet. A plain dot in the ink colour,
    never gold: gold means something needs a decision, and a new booking that
@@ -330,17 +338,42 @@ dialog.sheet .sheet-err.on{display:block}
 tr.b.unseen td:first-child{position:relative;padding-left:22px}
 tr.b.unseen td:first-child::before{content:"";position:absolute;left:8px;top:50%;
   width:7px;height:7px;margin-top:-4px;border-radius:50%;background:var(--ink)}
-.device{margin-right:8px}
-.device button[aria-pressed="true"]{background:var(--ink);color:var(--card)}
-#menuReview{margin-top:16px}
-#menuReview .prop{display:grid;grid-template-columns:1fr 92px 120px auto;gap:8px;
-  align-items:center;padding:8px 0;border-top:1px solid var(--line)}
-#menuReview .prop input{padding:8px 10px;border:1px solid var(--line);border-radius:7px;
-  font:inherit;background:var(--card);color:var(--ink);width:100%}
-#menuReview .head{font-size:13px;color:var(--ink-3);font-weight:600;border-top:0}
+.device{grid-column:1/3;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.device-label{font-size:12px;color:var(--ink-3);margin-right:4px}
+.device button{display:inline-flex;align-items:center;gap:8px;padding:7px 10px;min-height:36px;
+  border:1px solid var(--line);border-radius:8px;color:var(--ink-2);font-size:12.5px;background:var(--card)}
+.device button[hidden]{display:none}
+.device button svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.device button[aria-pressed="true"]{background:var(--band);color:var(--ink);border-color:var(--ink-3)}
+.device .device-state{width:24px;height:14px;border-radius:9px;background:var(--line);position:relative;flex:none}
+.device .device-state::after{content:"";position:absolute;width:8px;height:8px;top:3px;left:3px;
+  border-radius:50%;background:var(--ink-3);transition:transform .16s ease,background .16s ease}
+.device [aria-pressed="true"] .device-state::after{transform:translateX(10px);background:var(--ink)}
+.device button:hover{border-color:var(--ink-2)}
+
+/* Every OCR field remains visible. These are labelled cards on a phone. */
+#menuReview:not(:empty){margin-top:24px;border-top:1px solid var(--line);padding-top:22px}
+.review-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:5px}
+.review-heading h3{font-size:17px;letter-spacing:-.01em}
+.review-count{font-size:12px;color:var(--ink-2);background:var(--band);border:1px solid var(--line);border-radius:6px;padding:3px 8px;white-space:nowrap}
+.review-note{font-size:13px;color:var(--ink-2);max-width:65ch;margin-bottom:16px}
+.review-list{display:grid;gap:10px}
+#menuReview .prop{display:grid;grid-template-columns:minmax(0,1fr) minmax(92px,.35fr) minmax(120px,.45fr) auto;gap:12px;
+  align-items:end;padding:14px;background:var(--band);border:1px solid var(--line);border-radius:10px;min-width:0}
+.review-field{display:block;min-width:0}
+.review-field span{display:block;font-size:12px;font-weight:500;color:var(--ink-2);margin-bottom:6px}
+#menuReview .prop input{padding:10px 11px;border:1px solid var(--line);border-radius:7px;min-height:44px;
+  font:inherit;background:var(--card);color:var(--ink);width:100%;min-width:0}
+#menuReview .prop input[data-k="price"]{font-variant-numeric:tabular-nums;font-weight:600}
+#menuReview .prop .btn{min-height:44px}
+.review-actions{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0 10px}
+.review-disclaimer{font-size:12.5px;color:var(--ink-3);max-width:72ch}
 @media (max-width:640px){
-  #menuReview .prop{grid-template-columns:1fr auto}
-  #menuReview .prop .col-hide{display:none}
+  #menuReview .prop{grid-template-columns:minmax(0,.7fr) minmax(0,1fr);gap:12px}
+  #menuReview .review-name{grid-column:1/-1}
+  #menuReview .prop .btn{grid-column:1/-1;justify-self:end}
+  #menuReview .prop input{font-size:16px}
+  .review-actions .btn.key{flex:1}
 }
 @media (max-width:560px){
   dialog.sheet{width:calc(100vw - 20px)}
@@ -371,15 +404,89 @@ tr.b.unseen td:first-child::before{content:"";position:absolute;left:8px;top:50%
 .empty{padding:28px 22px;color:var(--ink-2)}
 
 @media(max-width:880px){
-  nav{order:3;width:100%}
+  .bar-in{grid-template-columns:1fr auto;gap:12px}
+  nav{grid-column:1/-1;grid-row:2;width:100%;min-width:0}
+  .acct{grid-column:2;grid-row:1;max-width:180px;overflow-wrap:anywhere}
+  .device{grid-column:1;grid-row:3}
+  .theme{grid-column:2;grid-row:3}
   .grid,.grid.three{grid-template-columns:1fr}
   .col-hide{display:none}
   .bar-in,.page{padding-left:16px;padding-right:16px}
   thead th,tbody td,tr.block td{padding-left:14px;padding-right:14px}
 }
+@media(max-width:560px){
+  .device{grid-column:1/-1}
+  .device-label{display:none}
+  .theme{grid-column:1/-1;grid-row:4;justify-self:start}
+  nav{gap:2px}
+  nav button{padding-left:10px;padding-right:10px}
+  #pending tbody tr{display:grid;grid-template-columns:80px minmax(0,1fr)}
+  #pending tbody td{width:auto!important;min-width:0}
+  #pending tbody td:last-child{grid-column:1/-1}
+}
+
+/* Non-blocking feedback shares the save bar's surface and language. */
+.toasts{position:fixed;bottom:max(22px,env(safe-area-inset-bottom));right:22px;z-index:50;
+  width:min(380px,calc(100vw - 32px));max-height:min(60dvh,440px);overflow-y:auto;
+  display:grid;gap:10px;pointer-events:none}
+body:has(.savebar.show) .toasts{bottom:calc(100px + env(safe-area-inset-bottom))}
+.toast{display:flex;align-items:flex-start;gap:10px;padding:14px 12px 14px 16px;
+  border:1px solid var(--line);border-radius:10px;background:var(--card);box-shadow:0 8px 28px rgba(0,0,0,.2);
+  pointer-events:auto;animation:surface-in .2s ease-out}
+.toast.error{border-color:var(--no-line)}
+.toast.success{border-color:var(--ok-line)}
+.toast .note{flex:1;font-size:14px;color:var(--ink-2);padding-top:4px;overflow-wrap:anywhere}
+.toast.error .note{color:var(--no)}
+.toast.success .note{color:var(--ok)}
+.toast-close{display:grid;place-items:center;flex:none;width:32px;height:32px;border-radius:6px;font-size:21px;line-height:1;color:var(--ink-2)}
+.toast-close:hover{background:var(--band);color:var(--ink)}
+@media(max-width:640px){.toasts{right:16px;bottom:calc(16px + env(safe-area-inset-bottom))}}
+
+/* Motion explains arrivals and changes; polling unchanged rows stays quiet. */
+.btn,nav button,.theme button,.device button{transition:background .16s ease,border-color .16s ease,color .16s ease,opacity .16s ease}
+.btn:active:not(:disabled){transform:translateY(1px)}
+.f input,.f select,.f textarea,.review-field input{transition:border-color .16s ease,box-shadow .16s ease}
+.review-field input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+tr.arriving{animation:surface-in .26s ease-out both;animation-delay:var(--row-delay,0ms)}
+tr.status-changed .pill{animation:status-in .3s ease-out}
+tr.detail.open .dl,tr.detail.open .acts{animation:surface-in .18s ease-out}
+.pending-arrival{animation:surface-in .24s ease-out}
+#pending.needs-decision{border-color:var(--gold-line)}
+#pending.needs-decision h2{color:var(--gold)}
+.pending-loading .sk{max-width:300px}
+.review-list.arriving .prop{animation:surface-in .22s ease-out both;animation-delay:var(--row-delay,0ms)}
+@keyframes surface-in{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
+@keyframes status-in{from{opacity:.4;transform:translateY(3px)}to{opacity:1;transform:translateY(0)}}
+@keyframes sheet-in{from{opacity:0;transform:translateY(14px) scale(.99)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes backdrop-in{from{opacity:0}to{opacity:1}}
+
+/* The supplied logo, a short first-open greeting, never a loading gate. */
+.brand-reveal{position:fixed;inset:0;width:100%;height:100%;z-index:100;display:grid;place-items:center;
+  background:var(--page);cursor:pointer;animation:reveal-out .18s ease-out var(--reveal-delay,1120ms) forwards}
+.brand-reveal[hidden]{display:none}
+.brand-reveal img{width:min(340px,76vw);height:auto;mix-blend-mode:multiply;animation:logo-in .6s cubic-bezier(.2,.8,.2,1) both}
+.brand-reveal span{position:absolute;bottom:max(36px,env(safe-area-inset-bottom));left:0;right:0;
+  font-size:12px;color:var(--ink-3);letter-spacing:.02em;animation:surface-in .4s ease-out both}
+:root[data-theme="dark"] .brand-reveal img,:root[data-theme="black"] .brand-reveal img{filter:invert(1);mix-blend-mode:screen}
+@keyframes logo-in{from{opacity:0;transform:translateY(10px) scale(.97);clip-path:inset(0 0 100% 0)}to{opacity:1;transform:translateY(0) scale(1);clip-path:inset(0)}}
+@keyframes reveal-out{to{opacity:0;visibility:hidden}}
+@media(pointer:coarse){
+  .device button,.theme button,.arrow,.toast-close,.tabs button{min-width:44px;min-height:44px}
+  .f input,.f select,.f textarea{min-height:44px;font-size:16px}
+  .sw{width:50px;height:30px}
+  .sw::after{width:24px;height:24px}
+  .sw.on::after{left:23px}
+  .sw::before{content:"";position:absolute;inset:-10px 0}
+}
 </style>
 </head>
 <body>
+
+<button class="brand-reveal" id="brandReveal" type="button" aria-label="Alpinecall. Skip introduction" hidden>
+  <img id="revealLogo" alt="Alpinecall" width="640" height="640" decoding="async">
+  <span>Tap anywhere to continue</span>
+</button>
+<div class="toasts" id="toasts" aria-label="Notifications"></div>
 
 <header class="bar">
   <div class="bar-in">
@@ -393,9 +500,16 @@ tr.b.unseen td:first-child::before{content:"";position:absolute;left:8px;top:50%
       <button data-v="settings">Settings</button>
     </nav>
     <div class="acct"><b id="acctName">&nbsp;</b><span id="acctSub">&nbsp;</span></div>
-    <div class="theme device" id="device" aria-label="This device">
-      <button id="soundBtn" aria-pressed="true" title="A tone when a booking lands, a second one when something needs you">Sound</button>
-      <button id="wakeBtn" aria-pressed="false" title="Stop the screen going dark on a tablet by the door" hidden>Keep screen on</button>
+    <div class="device" id="device" role="group" aria-label="This device">
+      <span class="device-label">This device</span>
+      <button id="soundBtn" aria-pressed="true" title="A tone when a booking lands, a second one when something needs you">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4V5ZM15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></svg>
+        <span class="device-text">Sound on</span><span class="device-state" aria-hidden="true"></span>
+      </button>
+      <button id="wakeBtn" aria-pressed="false" title="Stop the screen going dark on a tablet by the door" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2"/><path d="M10 18h4"/></svg>
+        <span class="device-text">Keep screen on</span><span class="device-state" aria-hidden="true"></span>
+      </button>
     </div>
     <div class="theme" id="theme">
       <button data-t="light">Light</button>
@@ -427,8 +541,9 @@ tr.b.unseen td:first-child::before{content:"";position:absolute;left:8px;top:50%
   </div>
 
   <section class="card" id="pending">
-    <div class="card-h"><div><h2>Waiting on you</h2><p>Everything else is already confirmed.</p></div></div>
-    <table><tbody>
+    <div class="card-h"><div><h2>Waiting on you</h2><p id="pendingNote">Checking for anything that needs a decision.</p></div></div>
+    <div class="empty pending-loading" id="pendingEmpty"><span class="sk" aria-label="Loading requests"></span></div>
+    <table id="pendingTable" class="hide"><tbody>
       <tr>
         <td style="width:110px" id="pT">7:15 PM</td>
         <td><span id="pN">Kulkarni</span>
@@ -569,12 +684,12 @@ tr.b.unseen td:first-child::before{content:"";position:absolute;left:8px;top:50%
       </div>
       <p style="font-size:13px;color:var(--ink-3);margin-top:11px">A photo or PDF is kept here so you can read it while you type the dishes in. Nothing is read off it automatically — a half-read menu puts food on the agent's lips the kitchen never made.</p>
       <div class="acts" style="margin-top:12px"><button class="btn key" id="menuRead" hidden>Read the dishes off it</button></div>
-      <div id="menuReview"></div>
+      <div id="menuReview" role="region" aria-label="Review dishes from the menu"></div>
       <div id="menuShot"></div>
     </div>
   </section>
   <section class="card">
-    <div class="card-h"><div><h2>Mains</h2><p>14 dishes. Turn one off when the kitchen runs out.</p></div></div>
+    <div class="card-h"><div><h2>Your dishes</h2><p id="menuListNote">Loading the menu.</p></div></div>
     <table>
       <thead><tr><th>Dish</th><th style="width:230px" class="col-hide">Notes for the agent</th><th style="width:96px" class="r">Price</th><th style="width:106px" class="r">Available</th></tr></thead>
       <tbody id="menuRows">
@@ -838,7 +953,7 @@ tr.b.unseen td:first-child::before{content:"";position:absolute;left:8px;top:50%
 
 </div>
 
-<script src="/static/dashboard/app.js"></script>
+<script src="/static/dashboard/app.js" defer></script>
 <!-- The sheet lives here, outside every view. A <dialog> inside a hidden
      section opens into the top layer, makes the page inert, and paints
      nothing: a frozen page and a button that "does nothing", at once. -->

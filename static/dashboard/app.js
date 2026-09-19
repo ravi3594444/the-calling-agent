@@ -124,6 +124,82 @@ function skeleton(rows){
 const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
+/* Errors stay until dismissed. Routine feedback fades only while nobody is
+   reading or focusing it. No HTML from a server message reaches the page. */
+function showToast(message, kind = "error"){
+  const host=document.getElementById("toasts");
+  if(!host) return;
+  const text=String(message);
+  if([...host.children].some(t=>t.querySelector(".note").textContent===text)) return;
+  const toast=document.createElement("div");
+  toast.className=`toast ${kind}`;
+  const note=document.createElement("span");
+  note.className="note";
+  note.setAttribute("role", kind==="error" ? "alert" : "status");
+  note.textContent=text;
+  const close=document.createElement("button");
+  close.className="toast-close";
+  close.type="button";
+  close.setAttribute("aria-label", "Dismiss notification");
+  close.textContent="×";
+  let timer;
+  const remove=()=>{ clearTimeout(timer); toast.remove(); };
+  const pause=()=>clearTimeout(timer);
+  const resume=()=>{
+    pause();
+    if(kind!=="error" && !toast.matches(":hover") && !toast.contains(document.activeElement)){
+      timer=setTimeout(remove,6000);
+    }
+  };
+  close.addEventListener("click",remove);
+  toast.addEventListener("pointerenter",pause);
+  toast.addEventListener("pointerleave",resume);
+  toast.addEventListener("focusin",pause);
+  toast.addEventListener("focusout",()=>setTimeout(resume,0));
+  toast.append(note,close);
+  host.append(toast);
+  resume();
+}
+
+/* Session-only, optional and bounded independently of the image or API.
+   No wait/await here: start() begins fetching in the same task. */
+function revealBrand(){
+  const reveal=document.getElementById("brandReveal");
+  const logo=document.getElementById("revealLogo");
+  const reduced=matchMedia("(prefers-reduced-motion: reduce)");
+  try{
+    if(sessionStorage.getItem("alpinecall-reveal")) return;
+    sessionStorage.setItem("alpinecall-reveal","seen");
+  }catch(e){ return; }                 // unavailable storage must not replay it
+  if(reduced.matches) return;
+  // If the page itself arrived slowly, do not charge the host another intro.
+  // The budget is measured from navigation, not from the image's load event.
+  const budget=Math.min(1300,1800-performance.now());
+  if(budget<450) return;
+  let timer;
+  const finish=()=>{
+    reveal.hidden=true;
+    clearTimeout(timer);
+    document.removeEventListener("pointerdown",skip,true);
+    document.removeEventListener("keydown",skip,true);
+    reduced.removeEventListener("change",finish);
+  };
+  const skip=e=>{
+    // Consume activation so a skip cannot also seat or accept a booking.
+    if(e.type==="pointerdown" || e.key==="Enter" || e.key===" ") e.preventDefault();
+    finish();
+  };
+  reveal.addEventListener("click",finish,{once:true});
+  logo.addEventListener("error",finish,{once:true});
+  document.addEventListener("pointerdown",skip,true);
+  document.addEventListener("keydown",skip,true);
+  reduced.addEventListener("change",finish,{once:true});
+  logo.src="/static/dashboard/alpinecall-logo.webp";
+  reveal.style.setProperty("--reveal-delay",`${budget-180}ms`);
+  reveal.hidden=false;
+  timer=setTimeout(finish,budget);
+}
+
 /* ---------------- state ---------------- */
 /* Everything the server told us. No screen keeps its own copy of the truth. */
 const state = {
@@ -183,6 +259,8 @@ function clockTime(iso){
 let dayKey="tonight";
 let data=[];
 let openRows=new Set();
+let bookingsLoadedFor=null, bookingsRequest=0;
+document.getElementById("rows").innerHTML=skeleton(6);
 
 const LABEL={
   arrived:["Seated","ok"],
@@ -193,7 +271,7 @@ const LABEL={
   declined:["Declined","no"],
 };
 
-function drawBookings(){
+function drawBookings(changes = new Map()){
   const q=(document.getElementById("q").value||"").toLowerCase();
   const rows=document.getElementById("rows");
   const list=data.filter(b=>!q||[b.name,b.phone,b.reference].join(" ").toLowerCase().includes(q));
@@ -219,7 +297,8 @@ function drawBookings(){
     }
     const i=data.indexOf(b);
     const [label,tone]=LABEL[b.status]||[b.status,""];
-    html+=`<tr class="b ${b.status==="arrived"?"past":""} ${b.status==="no_show"?"missed":""} ${seenIds.has(b.id)?"":"unseen"}" data-i="${i}">
+    const motion=changes.get?.(b.id)||"";
+    html+=`<tr class="b ${b.status==="arrived"?"past":""} ${b.status==="no_show"?"missed":""} ${seenIds.has(b.id)?"":"unseen"} ${motion}" data-i="${i}" style="--row-delay:${Math.min(i,5)*20}ms">
       <td>${esc(b.time)}</td>
       <td>${esc(b.name)}${b.meta?`<div class="meta">${esc(b.meta)}</div>`:""}</td>
       <td class="r">${b.party_size}</td>
@@ -293,7 +372,7 @@ document.getElementById("rows").addEventListener("click", async e=>{
       redrawn=true;
     }
   }catch(err){
-    alert(err.detail || "That didn't go through. Nothing has been changed.");
+    showToast(err.detail || "That didn't go through. Nothing has been changed.");
   }finally{
     if(!redrawn){ button.classList.remove("busy"); delete button.dataset.busy; }
   }
@@ -325,16 +404,28 @@ const DAY_LABEL={tonight:"Tonight",tomorrow:"Tomorrow",week:"This week"};
 
 async function loadBookings(){
   const rows=document.getElementById("rows");
-  rows.innerHTML=skeleton(6);
+  const requestedDay=dayKey, requestId=++bookingsRequest;
+  const sameDay=bookingsLoadedFor===requestedDay;
+  const previous=new Map(sameDay ? data.map(b=>[b.id,b.status]) : []);
+  const opened=new Set(sameDay ? [...openRows].map(i=>data[i]?.id) : []);
+  // A first load or a different filter gets skeletons. A background refresh
+  // keeps the current list readable and animates only actual changes.
+  if(!sameDay) rows.innerHTML=skeleton(6);
+  rows.setAttribute("aria-busy","true");
   document.getElementById("dayTitle").textContent=DAY_LABEL[dayKey]||dayKey;
   try{
-    const payload=await api.bookings(dayKey);
+    const payload=await api.bookings(requestedDay);
+    if(requestId!==bookingsRequest) return;
     data=payload.bookings;
+    bookingsLoadedFor=requestedDay;
     noticeBookings(data);
     window.__blocks=payload.blocks;
-    openRows.clear();
+    openRows=new Set(data.flatMap((b,i)=>opened.has(b.id)?[i]:[]));
+    const changes=new Map(data.flatMap(b=>
+      !previous.has(b.id) ? [[b.id,"arriving"]]
+      : previous.get(b.id)!==b.status ? [[b.id,"status-changed"]] : []));
     freshness();
-    drawBookings();
+    drawBookings(changes);
     // The server names the day: "Tonight" is the venue's tonight, and a
     // specific date is written the way this venue writes dates.
     document.getElementById("dayTitle").textContent=payload.title;
@@ -344,7 +435,17 @@ async function loadBookings(){
       `${s.covers} ${s.unit_plural} across ${s.count} booking${s.count===1?"":"s"}.`+
       (dayKey==="tonight"&&s.seated?` ${s.seated} ${s.seated===1?"is":"are"} seated now.`:"");
   }catch(e){
-    fail(rows.closest(".card"), loadBookings, e);
+    if(requestId!==bookingsRequest) return;
+    if(sameDay){
+      showToast("Couldn't refresh bookings. You're still seeing the previous list.");
+    }else{
+      // Preserve the table and its listeners so retry can really recover.
+      rows.innerHTML=`<tr><td colspan="5" class="empty">Couldn't load bookings for this day.
+        <button class="btn" type="button">Try again</button></td></tr>`;
+      rows.querySelector("button").addEventListener("click",loadBookings);
+    }
+  }finally{
+    if(requestId===bookingsRequest) rows.setAttribute("aria-busy","false");
   }
 }
 
@@ -357,25 +458,44 @@ document.getElementById("daytabs").addEventListener("click",e=>{
 document.getElementById("q").addEventListener("input",drawBookings);
 
 /* ---------------- waiting on you ---------------- */
-let pendingId=null, pendingSeenOnce=false;
+let pendingId=null, pendingSeenOnce=false, pendingRequest=0, pendingBusy=false;
 let chan="text";
 
+function emptyPending(message){
+  document.getElementById("pending").classList.remove("needs-decision","pending-arrival");
+  document.getElementById("pendingTable").classList.add("hide");
+  const empty=document.getElementById("pendingEmpty");
+  empty.classList.remove("hide","pending-loading");
+  empty.textContent=message;
+  document.getElementById("pendingNote").textContent="Nothing right now.";
+}
+
 async function loadPending(){
+  if(pendingBusy) return;
+  const requestId=++pendingRequest;
   const card=document.getElementById("pending");
   try{
     const payload=await api.pending();
+    if(requestId!==pendingRequest) return;
     if(!payload.pending){
       pendingSeenOnce=true; pendingId=null;
-      card.innerHTML=`<div class="card-h"><div><h2>Waiting on you</h2>
-        <p>Nothing right now.</p></div></div>
-        <div class="empty">Everything the agent took is already confirmed.</div>`;
+      emptyPending("Everything the agent took is already confirmed.");
       return;
     }
     const p=payload.pending;
-    if(pendingSeenOnce && pendingId!==p.id) tone("decision");
+    const incoming=pendingId!==p.id;
+    if(pendingSeenOnce && incoming) tone("decision");
     pendingSeenOnce=true;
     pendingId=p.id;
-    chan=payload.defaults?.on_accept==="call"?"call":"text";
+    if(incoming) chan=payload.defaults?.on_accept==="call"?"call":"text";
+    document.getElementById("pendingTable").classList.remove("hide");
+    document.getElementById("pendingEmpty").classList.add("hide");
+    document.getElementById("pendingNote").textContent="Everything else is already confirmed.";
+    card.classList.add("needs-decision");
+    if(incoming){
+      card.classList.add("pending-arrival");
+      card.addEventListener("animationend",()=>card.classList.remove("pending-arrival"),{once:true});
+    }
     document.getElementById("pT").textContent=p.time;
     document.getElementById("pN").textContent=p.name;
     document.getElementById("pW").textContent=
@@ -384,7 +504,13 @@ async function loadPending(){
     document.querySelectorAll("#chan button").forEach(b=>
       b.classList.toggle("on", b.dataset.c===chan));
   }catch(e){
-    document.getElementById("pW").textContent="Couldn't load this. Reload the page.";
+    if(requestId!==pendingRequest) return;
+    if(pendingId){
+      document.getElementById("pW").textContent="Couldn't refresh this request. Try again shortly.";
+    }else{
+      emptyPending("Couldn't load requests. Try again shortly.");
+      document.getElementById("pendingNote").textContent="Waiting for the server.";
+    }
   }
 }
 
@@ -398,27 +524,30 @@ document.getElementById("chan")?.addEventListener("click",e=>{
   document.getElementById(id)?.addEventListener("click",e=>{
     const btn=e.currentTarget;
     if(btn.dataset.busy || !pendingId) return;      // guards a double tap
+    pendingBusy=true;
+    ++pendingRequest;                             // invalidate a poll in flight
     const other=document.getElementById(id==="acceptBtn"?"declineBtn":"acceptBtn");
     btn.dataset.busy="1"; btn.classList.add("busy"); other.disabled=true;
 
     api.decide(pendingId, id==="acceptBtn", chan)
       .then(result=>settle(result))
       .catch(err=>{
-        btn.classList.remove("busy"); delete btn.dataset.busy; other.disabled=false;
         document.getElementById("pW").textContent=
           err.detail || "That didn't go through. Nothing was sent — try again.";
+      }).finally(()=>{
+        pendingBusy=false;
+        btn.classList.remove("busy"); delete btn.dataset.busy; other.disabled=false;
       });
   });
 });
 
 function settle(result){
-  const card=document.getElementById("pending");
   const who=result.booking.name;
   const when=result.booking.time;
-  card.innerHTML=`<div class="card-h"><div><h2>Waiting on you</h2><p>Nothing right now.</p></div></div>
-    <div class="empty">${esc(who)} ${result.accepted
-      ? `is confirmed for ${esc(when)}.`
-      : `has been declined.`} ${esc(result.told)}</div>`;
+  pendingId=null;
+  emptyPending(`${who} ${result.accepted
+    ? `is confirmed for ${when}.`
+    : "has been declined."} ${result.told}`);
   loadBookings();
   setTimeout(loadPending, 400);
 }
@@ -748,7 +877,7 @@ document.getElementById("blockedRows")?.addEventListener("click", async e=>{
     await loadMonth();
   }catch(err){
     button.classList.remove("busy"); delete button.dataset.busy;
-    alert(err.detail || "That didn't go through.");
+    showToast(err.detail || "That didn't go through.");
   }
 });
 
@@ -842,6 +971,9 @@ async function loadMenu(){
   if(!body) return;
   try{
     const payload=await api.menu();
+    const count=payload.items.length;
+    document.getElementById("menuListNote").textContent=
+      `${count} dish${count===1?"":"es"}. Turn one off when the kitchen runs out.`;
     body.innerHTML = payload.items.length
       ? payload.items.map(item=>`<tr class="${item.available?"":"past"}" data-dish="${item.id}">
           <td>${esc(item.name)}${item.tags.length?`<div class="meta">${
@@ -889,7 +1021,7 @@ async function drawMenuShot(upload){
       const b=e.target; if(b.dataset.busy) return;
       b.dataset.busy="1"; b.classList.add("busy");
       try{ await api.removeUpload(upload.id); proposed=[]; drawReview(); await loadMenu(); }
-      catch(err){ alert(err.detail || "Couldn't remove it. Nothing has been changed."); }
+      catch(err){ showToast(err.detail || "Couldn't remove it. Nothing has been changed."); }
       finally{ delete b.dataset.busy; b.classList.remove("busy"); }
     });
   }catch(e){ /* the dishes are the point; a missing photo is not an error */ }
@@ -910,7 +1042,7 @@ async function drawMenuShot(upload){
       await api.uploadMenu(await shrink(file));
       await loadMenu();
     }catch(err){
-      alert(err.detail || "That upload didn't go through. Nothing has been changed.");
+      showToast(err.detail || "That upload didn't go through. Nothing has been changed.");
     }finally{
       button.classList.remove("busy");
       button.disabled=false;
@@ -943,7 +1075,7 @@ async function drawMenuShot(upload){
       await loadMenu();
       input.focus();
     }catch(err){
-      alert(err.detail || "That didn't save.");
+      showToast(err.detail || "That didn't save. Try again when you're ready.");
     }finally{
       delete button.dataset.busy;
     }
@@ -1651,27 +1783,33 @@ document.getElementById("exportGuests").addEventListener("click", () => {
    these out to callers and a mis-read allergen is the one mistake here that
    hurts somebody. */
 
-let proposed = [];
+let proposed = [], reviewSaving=false;
 
-function drawReview(){
+function drawReview(animate = false){
   const host = document.getElementById("menuReview");
   if(!proposed.length){ host.innerHTML = ""; return; }
 
   host.innerHTML = `
-    <div class="prop head"><div>Dish</div><div class="col-hide">Price</div>
-      <div class="col-hide">Section</div><div></div></div>
-    ${proposed.map((d,i)=>`<div class="prop" data-i="${i}">
-      <input data-k="name" value="${esc(d.name)}" aria-label="Dish name">
-      <input data-k="price" class="col-hide" type="number" step="0.01" inputmode="decimal"
-        value="${d.price ?? ""}" aria-label="Price">
-      <input data-k="section" class="col-hide" value="${esc(d.section||"")}" aria-label="Section">
-      <button class="btn no" data-drop="${i}" aria-label="Remove ${esc(d.name)}">Remove</button>
+    <div class="review-heading"><h3>Check the dishes</h3><span class="review-count">${proposed.length} to review</span></div>
+    <p class="review-note">Check each price against the photo. Edit anything the reader missed before adding it.</p>
+    <form id="menuReviewForm">
+    <div class="review-list ${animate?"arriving":""}">
+    ${proposed.map((d,i)=>`<div class="prop" data-i="${i}" style="--row-delay:${Math.min(i,5)*20}ms">
+      <label class="review-field review-name"><span>Dish name</span>
+        <input data-k="name" value="${esc(d.name)}" required aria-label="Dish name"></label>
+      <label class="review-field"><span>Price${state.locale?.currency_symbol?` (${esc(state.locale.currency_symbol)})`:""}</span>
+        <input data-k="price" type="number" min="0" step="0.01" inputmode="decimal"
+          value="${esc(d.price ?? "")}" placeholder="Check price" aria-label="Price"></label>
+      <label class="review-field"><span>Section</span>
+        <input data-k="section" value="${esc(d.section||"")}" placeholder="e.g. Mains" aria-label="Section"></label>
+      <button class="btn no" type="button" data-drop="${i}" aria-label="Remove ${esc(d.name)}">Remove</button>
     </div>`).join("")}
-    <div class="acts" style="margin-top:14px">
-      <button class="btn key" id="menuKeep">Add these ${proposed.length} dishes</button>
-      <button class="btn" id="menuDrop">Discard</button>
     </div>
-    <p style="font-size:13px;color:var(--ink-3);margin-top:10px">
+    <div class="review-actions">
+      <button class="btn key" id="menuKeep" type="submit">Add ${proposed.length===1?"this dish":`these ${proposed.length} dishes`}</button>
+      <button class="btn" id="menuDrop" type="button">Discard</button>
+    </div></form>
+    <p class="review-disclaimer">
       Read them before you add them. Anything here is what the agent will say out loud.
       Allergy tags are only copied when the menu prints them — check them against the kitchen.
     </p>`;
@@ -1687,27 +1825,40 @@ document.getElementById("menuReview").addEventListener("input", e=>{
     : input.value;
 });
 
-document.getElementById("menuReview").addEventListener("click", async e=>{
+document.getElementById("menuReview").addEventListener("click", e=>{
+  if(reviewSaving) return;
   const drop = e.target.closest("button[data-drop]");
   if(drop){
     proposed.splice(+drop.dataset.drop, 1);
     drawReview();
     return;
   }
-  if(e.target.id === "menuDrop"){ proposed = []; drawReview(); return; }
+  if(e.target.id === "menuDrop"){ proposed = []; drawReview(); }
+});
 
-  const keep = e.target.closest("#menuKeep");
-  if(!keep || keep.dataset.busy) return;
+document.getElementById("menuReview").addEventListener("submit", async e=>{
+  e.preventDefault();
+  if(reviewSaving) return;
+  const form=e.target;
+  if(!form.reportValidity()) return;
+  const keep=form.querySelector("#menuKeep");
+  reviewSaving=true;
+  const controls=[...form.querySelectorAll("input,button"),document.getElementById("menuRead"),document.getElementById("menuPhoto")];
+  const disabled=controls.map(el=>el.disabled);
+  controls.forEach(el=>{ el.disabled=true; });
   keep.dataset.busy = "1";
   keep.classList.add("busy");
   try{
     await api.addDishes(proposed.filter(d => (d.name||"").trim()));
+    showToast(`${proposed.length===1?"The dish is":`All ${proposed.length} dishes are`} saved. The agent can use ${proposed.length===1?"it":"them"} now.`,"success");
     proposed = [];
     drawReview();
     await loadMenu();
   }catch(err){
-    alert(err.detail || "Those didn't save. Nothing has been changed.");
+    showToast(err.detail || "Those didn't save. Your edits are still here — try again.");
   }finally{
+    reviewSaving=false;
+    controls.forEach((el,i)=>{ el.disabled=disabled[i]; });
     delete keep.dataset.busy;
     keep.classList.remove("busy");
   }
@@ -1721,10 +1872,10 @@ document.getElementById("menuRead").addEventListener("click", async e=>{
   try{
     const payload = await api.readMenu(window.__upload.id);
     proposed = payload.dishes;
-    drawReview();
-    if(!proposed.length) alert("Nothing readable came off that one.");
+    drawReview(true);
+    if(!proposed.length) showToast("Nothing readable came off that one. Try a clearer photo or add the dishes by hand.","info");
   }catch(err){
-    alert(err.detail || "The reader couldn't be reached. Nothing has been changed.");
+    showToast(err.detail || "The reader couldn't be reached. Nothing has been changed.");
   }finally{
     delete button.dataset.busy;
     button.classList.remove("busy");
@@ -1859,9 +2010,9 @@ document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) applyWa
   if(!sound||!wake) return;
   const paint=()=>{
     sound.setAttribute("aria-pressed", String(device.sound));
-    sound.textContent = device.sound ? "Sound on" : "Sound off";
+    sound.querySelector(".device-text").textContent = device.sound ? "Sound on" : "Sound off";
     wake.setAttribute("aria-pressed", String(device.wake));
-    wake.textContent = device.wake ? "Screen stays on" : "Keep screen on";
+    wake.querySelector(".device-text").textContent = device.wake ? "Screen stays on" : "Keep screen on";
   };
   if("wakeLock" in navigator) wake.hidden=false;
   sound.addEventListener("click", ()=>{ device.sound=!device.sound; saveDevice(); paint(); if(device.sound) tone("arrival"); });
@@ -1869,4 +2020,5 @@ document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) applyWa
   paint(); applyWake();
 })();
 
+revealBrand();
 start();

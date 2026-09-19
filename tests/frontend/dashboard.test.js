@@ -70,6 +70,10 @@ test('the device bar and the unseen marker exist, and the marker is not gold', (
 test('bookings are noticed, rows can be marked seen, and audio waits for a tap', () => {
   assert.match(appSource, /noticeBookings\(data\)/, 'each fresh list is noticed');
   assert.match(appSource, /markSeen\(data\[i\]\?\.id\)/, 'opening a row marks it seen');
-  assert.match(appSource, /addEventListener\("pointerdown", unlockAudio/, 'audio unlocks on the first tap');
+  assert.match(
+    appSource,
+    /addEventListener\("pointerdown", unlockAudio/,
+    'audio unlocks on the first tap',
+  );
   assert.doesNotMatch(appSource, /Notification\.requestPermission/, 'no permission prompt, ever');
 });
