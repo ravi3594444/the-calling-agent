@@ -161,43 +161,43 @@ function showToast(message, kind = "error"){
   resume();
 }
 
-/* Session-only, optional and bounded independently of the image or API.
-   No wait/await here: start() begins fetching in the same task. */
+/* The head script already decided whether this plays, and the CSS animation
+   times itself from the first paint. What is left here is letting somebody
+   skip it, and clearing up if the logo never loads.
+
+   Must match the CSS: --reveal-hold + --reveal-fade, plus a little slack. */
+const REVEAL_TOTAL_MS = 4200;
+
 function revealBrand(){
+  const root=document.documentElement;
+  if(root.getAttribute("data-reveal")!=="on") return;   // the head script said no
+
   const reveal=document.getElementById("brandReveal");
   const logo=document.getElementById("revealLogo");
-  const reduced=matchMedia("(prefers-reduced-motion: reduce)");
-  try{
-    if(sessionStorage.getItem("alpinecall-reveal")) return;
-    sessionStorage.setItem("alpinecall-reveal","seen");
-  }catch(e){ return; }                 // unavailable storage must not replay it
-  if(reduced.matches) return;
-  // If the page itself arrived slowly, do not charge the host another intro.
-  // The budget is measured from navigation, not from the image's load event.
-  const budget=Math.min(1300,1800-performance.now());
-  if(budget<450) return;
+  // Preloaded in <head> when this was decided, so this is a cache hit. Set
+  // here rather than in the markup so a load that skips the reveal never
+  // asks for the image at all.
+  logo.src="/static/dashboard/alpinecall-logo.webp";
+  reveal.hidden=false;               // `hidden` stays the honest signal
+
   let timer;
   const finish=()=>{
     reveal.hidden=true;
+    root.removeAttribute("data-reveal");
     clearTimeout(timer);
     document.removeEventListener("pointerdown",skip,true);
     document.removeEventListener("keydown",skip,true);
-    reduced.removeEventListener("change",finish);
   };
   const skip=e=>{
-    // Consume activation so a skip cannot also seat or accept a booking.
+    // Consume the activation so a skip cannot also seat or accept a booking.
     if(e.type==="pointerdown" || e.key==="Enter" || e.key===" ") e.preventDefault();
     finish();
   };
   reveal.addEventListener("click",finish,{once:true});
-  logo.addEventListener("error",finish,{once:true});
+  logo.addEventListener("error",finish,{once:true});     // a missing logo is not a gate
   document.addEventListener("pointerdown",skip,true);
   document.addEventListener("keydown",skip,true);
-  reduced.addEventListener("change",finish,{once:true});
-  logo.src="/static/dashboard/alpinecall-logo.webp";
-  reveal.style.setProperty("--reveal-delay",`${budget-180}ms`);
-  reveal.hidden=false;
-  timer=setTimeout(finish,budget);
+  timer=setTimeout(finish,REVEAL_TOTAL_MS);
 }
 
 /* ---------------- state ---------------- */

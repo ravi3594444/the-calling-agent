@@ -77,3 +77,35 @@ test('bookings are noticed, rows can be marked seen, and audio waits for a tap',
   );
   assert.doesNotMatch(appSource, /Notification\.requestPermission/, 'no permission prompt, ever');
 });
+
+test('the reveal is decided before the first paint, not by the deferred script', () => {
+  // app.js is deferred, so anything it un-hides arrives AFTER the dashboard
+  // has painted: you saw the list, then the logo on top of it. The decision
+  // has to happen in <head>, and CSS has to be what shows the overlay.
+  const head = html.slice(0, html.indexOf('</head>'));
+  assert.match(head, /data-reveal/, 'the head script sets the attribute');
+  assert.ok(
+    head.indexOf('alpinecall-reveal') < html.indexOf('<body'),
+    'the decision runs before the body is parsed',
+  );
+
+  const css = document.querySelector('style').textContent;
+  assert.match(
+    css,
+    /:root\[data-reveal="on"\] \.brand-reveal\[hidden\]\{display:grid\}/,
+    'CSS shows the overlay, so it is painted with the page rather than after it',
+  );
+
+  // And it must end on its own: the animation finishes hidden, so a failure
+  // in app.js leaves a usable page rather than a covered one.
+  assert.match(css, /@keyframes reveal-out\{to\{opacity:0;visibility:hidden\}\}/);
+  assert.match(css, /animation:reveal-out var\(--reveal-fade,\.5s\).*var\(--reveal-hold,3500ms\) forwards/);
+});
+
+test('the logo is only requested when the reveal will actually play', () => {
+  // A load that skips the introduction should not spend bytes on it, so the
+  // src is set by script and the bytes are started by a conditional preload.
+  const markup = html.slice(html.indexOf('id="revealLogo"'), html.indexOf('id="revealLogo"') + 200);
+  assert.doesNotMatch(markup, /src=/, 'no unconditional src in the markup');
+  assert.match(html.slice(0, html.indexOf('</head>')), /rel="preload"|preload\.rel="preload"/);
+});
