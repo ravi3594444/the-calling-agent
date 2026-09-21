@@ -118,6 +118,7 @@ _mount_static(app, STATIC_DIR)
 from .api import (  # noqa: E402
     dashboard_router,
     manage_router,
+    signup_router,
     telephony_router,
     tools_router,
 )
@@ -126,6 +127,7 @@ app.include_router(dashboard_router)
 app.include_router(tools_router)
 app.include_router(telephony_router)
 app.include_router(manage_router)
+app.include_router(signup_router)
 
 
 def _build_agent(params: Mapping[str, str] | None = None) -> AgentDefinition | None:

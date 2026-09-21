@@ -24,6 +24,7 @@ Working end to end, proven on live calls unless noted.
 | **Outbound dialler** (§13) | Queued voice messages ring the guest; unanswered twice → the same words go as a text. **Not yet exercised against a real Twilio call.** |
 | **Dashboard** (§14) | Six screens, 39 API endpoints, every button wired. Sound, unseen markers, wake lock. Polished UI, logo reveal. |
 | **Menu reader** | Photo or PDF → proposed dishes → owner corrects → saved. Gemini 3.7 Flash. |
+| **Self-serve onboarding** (§15) | `/start` creates the tenant, the week and the first dashboard link, no terminal. Off unless `SIGNUP_ENABLED`. |
 | **Multi-tenancy** (§15) | Config-driven. No `if business_id ==` anywhere. Proven by onboarding a UK dental practice on a fresh database with zero code changes. |
 | **Locale, booking window, optional capacity, channel choice** (§15b–e) | Done. |
 | **Venue facts** | Cuisine, getting there, parking, wheelchair access, children, dress code, private room. The agent answers from them. |
@@ -137,8 +138,10 @@ In the order I would do it.
 5. **Billing and usage.** Nothing exists. The mockup has plan, next charge,
    and counters for calls answered / texts sent / bookings taken.
 
-6. **Self-serve onboarding.** `cli onboard` works and is CLI-only. The PRD's
-   "10-minute form" does not exist.
+6. ~~**Self-serve onboarding.**~~ Done: `/start` is the form. Off by default
+   (`SIGNUP_ENABLED`), optional invite code (`SIGNUP_CODE`). What remains is a
+   real rate limiter at the edge -- the one in `signup.py` is per process and
+   is a floor, not a ceiling.
 
 7. **Amend the PRD.** §16 still specifies Celery + Redis; this uses a plain
    loop over Postgres with `SKIP LOCKED` (fewer moving parts, and it satisfies

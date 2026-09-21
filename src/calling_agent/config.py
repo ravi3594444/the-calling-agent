@@ -90,6 +90,18 @@ class Settings(BaseSettings):
     allow_insecure_dashboard: bool = Field(default=False, alias="ALLOW_INSECURE_DASHBOARD")
     dashboard_base_url: str = Field(default="", alias="DASHBOARD_BASE_URL")
 
+    # --- Self-serve onboarding ------------------------------------------
+    # Off by default, and deliberately. /start creates a tenant and hands back
+    # a live dashboard link with no authentication in front of it, so a
+    # deployment opts in rather than discovering it is open. With a code set,
+    # the form asks for it: an invite-only signup without accounts existing.
+    signup_enabled: bool = Field(default=False, alias="SIGNUP_ENABLED")
+    signup_code: str = Field(default="", alias="SIGNUP_CODE")
+    # Per-process, per-address ceiling on completed signups. Not a substitute
+    # for a real limiter at the edge -- it is the floor under one, so a public
+    # form cannot mint a thousand venues from one script before anyone looks.
+    signup_max_per_hour: int = Field(default=5, alias="SIGNUP_MAX_PER_HOUR")
+
     # --- Jobs -----------------------------------------------------------
     # Expired holds must give their capacity back or the room fills with
     # ghosts. One minute, per PRD §7.
