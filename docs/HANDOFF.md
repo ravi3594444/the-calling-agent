@@ -28,7 +28,7 @@ Working end to end, proven on live calls unless noted.
 | **Locale, booking window, optional capacity, channel choice** (§15b–e) | Done. |
 | **Venue facts** | Cuisine, getting there, parking, wheelchair access, children, dress code, private room. The agent answers from them. |
 
-**Tests:** 223 backend, 45 frontend, ruff clean. Backend needs a Postgres —
+**Tests:** 223 backend, 47 frontend, ruff clean. Backend needs a Postgres —
 see `TEST_DATABASE_URL` in `tests/conftest.py`.
 
 ---
@@ -238,6 +238,15 @@ paints nothing: "Add a booking" did nothing and "Move" froze the page, at
 once.
 
 **Audio unlocks on the first tap. No permission prompt, ever** (§14).
+
+**The logo reveal is decided in an inline `<head>` script, and CSS is what
+shows it.** `app.js` is deferred, so anything it un-hides necessarily arrives
+*after* the dashboard has painted — which is exactly what you saw: the
+bookings list, then the logo on top of it. Moving that decision back into
+`app.js` would look tidier and bring the flash straight back. The markup keeps
+`hidden` so a scriptless page has no overlay at all, and the fade ends on
+`visibility:hidden` with `forwards` so a broken `app.js` leaves a usable page
+rather than a covered one.
 
 **Stale data is the highest-severity client bug here.** The freshness marker
 is driven by when the server *answered*, not when we asked. A host seating
