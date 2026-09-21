@@ -116,6 +116,7 @@ app = FastAPI(title="tableline", version="1.0.0", lifespan=lifespan)
 _mount_static(app, STATIC_DIR)
 
 from .api import (  # noqa: E402
+    auth_router,
     dashboard_router,
     manage_router,
     signup_router,
@@ -124,6 +125,7 @@ from .api import (  # noqa: E402
 )
 
 app.include_router(dashboard_router)
+app.include_router(auth_router)
 app.include_router(tools_router)
 app.include_router(telephony_router)
 app.include_router(manage_router)

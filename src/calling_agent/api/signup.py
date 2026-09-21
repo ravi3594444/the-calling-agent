@@ -23,6 +23,7 @@ it, because only its hash is stored and nobody can send it again.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 import unicodedata
@@ -32,9 +33,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .. import business_config, businesses
+from .. import business_config, businesses, owners
 from ..config import settings
+from ..owners import MIN_PASSWORD
 from .deps import business_for_token, issue_dashboard_token
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["signup"])
 
@@ -203,6 +207,20 @@ def _page(*, error: str = "", values: dict[str, str] | None = None) -> str:
     </div>
 
     <div class="card">
+      <h2>How you sign in</h2>
+      <div class="f"><label for="email">Your email</label>
+        <input id="email" name="email" type="email" required maxlength="200"
+               value="{keep("email")}" autocomplete="username" placeholder="you@yourvenue.com">
+        <span class="help">Nothing is sent to it yet. It is how you get back in
+          if you lose your link or change device.</span></div>
+      <div class="f"><label for="password">Password</label>
+        <input id="password" name="password" type="password" required
+               minlength="{MIN_PASSWORD}" autocomplete="new-password">
+        <span class="help">At least {MIN_PASSWORD} characters. Nobody can email
+          you a reset yet, so pick something you will remember.</span></div>
+    </div>
+
+    <div class="card">
       <h2>Where you are</h2>
       <div class="f"><label for="country">Country</label>
         <select id="country" name="country">{countries}</select>
@@ -313,12 +331,15 @@ async def create_venue(request: Request) -> Any:
     phone = field("phone")
     seats = field("seats")
     code = field("code")
+    email = field("email")
+    password = str(form.get("password") or "")
     days = [value for value in form.getlist("days") if isinstance(value, str)]
 
     typed = {
         "name": name, "description": description, "agent_name": agent_name,
         "vertical": vertical, "country": country, "phone": phone, "seats": seats,
         "opens": opens, "closes": closes, "days": ",".join(days),
+        "email": email,
     }
 
     def refuse(message: str) -> HTMLResponse:
@@ -339,6 +360,17 @@ async def create_venue(request: Request) -> Any:
     weekdays = sorted({int(day) for day in days if day.isdigit() and 0 <= int(day) <= 6})
     if not weekdays:
         return refuse("Pick at least one day you're open.")
+
+    if not owners.looks_like_an_email(owners.normalise_email(email)):
+        return refuse("That does not look like an email address.")
+    try:
+        owners.check_password_is_usable(password)
+    except owners.OwnerError as exc:
+        return refuse(str(exc))
+    # Asked before anything is created: a taken address should cost them a
+    # sentence, not a half-made venue holding the name they wanted.
+    if owners.email_taken(email):
+        return refuse("There is already an account with that email. Sign in instead.")
 
     seats_value: int | None = None
     if seats:
@@ -403,6 +435,16 @@ async def create_venue(request: Request) -> Any:
             for weekday in weekdays
         ],
     )
+
+    try:
+        owners.create(business.id, email=email, password=password)
+    except owners.OwnerError:
+        # Lost a race with a simultaneous signup for the same address -- the
+        # check above answers this for everyone else. The venue is real and
+        # works from the link below, so it is handed over rather than thrown
+        # away; `cli owner` adds the account afterwards. A venue with no
+        # account beats a form that ate ten minutes of someone's evening.
+        log.warning("venue %s created without an owner account", business.slug)
 
     _record_signup(request)
     secret = issue_dashboard_token(business.id, label="self-serve signup")

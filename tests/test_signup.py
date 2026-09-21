@@ -21,6 +21,7 @@ from tests.conftest import test_phone_number as a_number
 
 #: A complete, valid submission. Tests vary one field at a time from this.
 GOOD = {
+    "password": "a-good-long-password",
     "description": "small plates and natural wine",
     "agent_name": "Inês",
     "vertical": "restaurant",
@@ -54,9 +55,18 @@ def unique_name(label: str = "Venue") -> str:
     return f"{label} {_run}{next(_names)}"
 
 
+#: Emails are unique across the product, so every submission needs its own.
+_emails = itertools.count(1)
+
+
+def unique_email() -> str:
+    return f"owner{_run}{next(_emails)}@example.com"
+
+
 def submit(client, **changes):
     form = dict(GOOD) | changes
     form.setdefault("name", unique_name())
+    form.setdefault("email", unique_email())
     return client.post("/start", data=form)
 
 
@@ -87,7 +97,7 @@ def test_signup_is_off_unless_it_was_turned_on(monkeypatch):
     monkeypatch.setattr(settings, "signup_enabled", False)
     client = TestClient(app)
     assert client.get("/start").status_code == 404
-    assert client.post("/start", data=GOOD).status_code == 404
+    assert client.post("/start", data=dict(GOOD) | {"name": "x"}).status_code == 404
 
 
 def test_a_disabled_signup_looks_absent_even_to_a_malformed_post(monkeypatch):
@@ -103,7 +113,10 @@ def test_a_disabled_signup_looks_absent_even_to_a_malformed_post(monkeypatch):
 
 def test_an_invite_code_is_required_when_one_is_set(monkeypatch, open_signup):
     monkeypatch.setattr(settings, "signup_code", "letmein")
-    refused = open_signup.post("/start", data=dict(GOOD) | {"name": "Café Ramona", "code": "wrong"})
+    refused = open_signup.post(
+        "/start",
+        data=dict(GOOD) | {"name": "Café Ramona", "email": unique_email(), "code": "wrong"},
+    )
     assert refused.status_code == 200, "a wrong code is the form again, not an API error"
     assert "That invite code is not right." in refused.text
     assert "Café Ramona" in refused.text, "what they typed must survive the refusal"
@@ -155,7 +168,9 @@ def test_a_submission_creates_a_venue_that_can_answer_the_phone(open_signup):
     from calling_agent.agent_config import build_prompt_for, greeting_for
 
     name = unique_name("Café Ramona")
-    created = open_signup.post("/start", data=dict(GOOD) | {"name": name, "phone": a_number()})
+    created = open_signup.post(
+        "/start", data=dict(GOOD) | {"name": name, "email": unique_email(), "phone": a_number()}
+    )
     assert created.status_code == 303
 
     business = venue_from(created)

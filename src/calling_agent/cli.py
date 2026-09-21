@@ -18,8 +18,9 @@ import argparse
 import json
 import sys
 from datetime import time
+from getpass import getpass
 
-from . import businesses, db
+from . import businesses, db, owners
 from .api.deps import issue_dashboard_token
 
 
@@ -88,6 +89,34 @@ def cmd_link(args: argparse.Namespace) -> int:
     secret = issue_dashboard_token(business.id, label=args.label)
     base = args.base_url.rstrip("/")
     print(f"{base}/dashboard?token={secret}")
+    return 0
+
+
+def cmd_owner(args: argparse.Namespace) -> int:
+    """Create or reset the account that can sign in to a venue's dashboard.
+
+    The recovery path. Nothing can email a reset link yet, so a forgotten
+    password is a person asking you, and this is what you run.
+    """
+    if args.password:
+        password = args.password
+    else:
+        password = getpass("New password: ")
+        if password != getpass("Again: "):
+            print("Those do not match.")
+            return 1
+
+    try:
+        if args.slug:
+            business = businesses.by_slug(args.slug)
+            owner = owners.create(business.id, email=args.email, password=password)
+            print(f"created {owner.email} for {business.slug}")
+        else:
+            owner = owners.set_password(args.email, password)
+            print(f"password reset for {owner.email}")
+    except (owners.OwnerError, businesses.UnknownBusiness) as exc:
+        print(str(exc))
+        return 1
     return 0
 
 
@@ -185,6 +214,20 @@ def build_parser() -> argparse.ArgumentParser:
     link.add_argument("--label", default="")
     link.add_argument("--base-url", dest="base_url", default="http://localhost:8080")
     link.set_defaults(fn=cmd_link)
+
+    owner = sub.add_parser("owner", help="create or reset a dashboard account")
+    owner.add_argument("--email", required=True)
+    owner.add_argument(
+        "--slug",
+        default="",
+        help="create an account for this venue; omit to reset an existing one",
+    )
+    owner.add_argument(
+        "--password",
+        default="",
+        help="prompted for if omitted, which keeps it out of your shell history",
+    )
+    owner.set_defaults(fn=cmd_owner)
 
     config = sub.add_parser("config", help="read or write one config section")
     config.add_argument("--slug", required=True)

@@ -101,6 +101,9 @@ class Settings(BaseSettings):
     # for a real limiter at the edge -- it is the floor under one, so a public
     # form cannot mint a thousand venues from one script before anyone looks.
     signup_max_per_hour: int = Field(default=5, alias="SIGNUP_MAX_PER_HOUR")
+    # How long a browser stays signed in. The link an owner saved never
+    # expires; this is a browser they happened to use, so it does.
+    session_days: int = Field(default=90, alias="SESSION_DAYS")
 
     # --- Jobs -----------------------------------------------------------
     # Expired holds must give their capacity back or the room fills with

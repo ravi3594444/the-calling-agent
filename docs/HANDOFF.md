@@ -24,7 +24,8 @@ Working end to end, proven on live calls unless noted.
 | **Outbound dialler** (§13) | Queued voice messages ring the guest; unanswered twice → the same words go as a text. **Not yet exercised against a real Twilio call.** |
 | **Dashboard** (§14) | Six screens, 39 API endpoints, every button wired. Sound, unseen markers, wake lock. Polished UI, logo reveal. |
 | **Menu reader** | Photo or PDF → proposed dishes → owner corrects → saved. Gemini 3.7 Flash. |
-| **Self-serve onboarding** (§15) | `/start` creates the tenant, the week and the first dashboard link, no terminal. `/start/ready` shows that link once and says to keep it. Off unless `SIGNUP_ENABLED`. |
+| **Self-serve onboarding** (§15) | `/start` creates the tenant, the week, an owner account and the first dashboard link, no terminal. `/start/ready` shows that link once and says to keep it. Off unless `SIGNUP_ENABLED`. |
+| **Owner accounts** | `/login` mints an ordinary dashboard token into the cookie `current_business` already reads, so a cleared browser is no longer a locked-out venue. scrypt, salted and peppered. No login during service: the saved link still works (§14). Reset is `cli owner` until something can send mail. |
 | **Multi-tenancy** (§15) | Config-driven. No `if business_id ==` anywhere. Proven by onboarding a UK dental practice on a fresh database with zero code changes. |
 | **Locale, booking window, optional capacity, channel choice** (§15b–e) | Done. |
 | **Venue facts** | Cuisine, getting there, parking, wheelchair access, children, dress code, private room. The agent answers from them. |
