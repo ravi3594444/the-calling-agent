@@ -16,7 +16,8 @@ you run a private beta without building accounts first.
 WHAT IT DELIBERATELY DOES NOT DO
 No email, no password, no account. The dashboard's security model is the
 secret link (PRD §14) and this mints one; adding a login here would mean
-inventing a second one. The link is shown once, on the page that created it.
+inventing a second one. /start/ready shows that link once and says to keep
+it, because only its hash is stored and nobody can send it again.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import business_config, businesses
 from ..config import settings
-from .deps import issue_dashboard_token
+from .deps import business_for_token, issue_dashboard_token
 
 router = APIRouter(tags=["signup"])
 
@@ -234,8 +235,8 @@ def _page(*, error: str = "", values: dict[str, str] | None = None) -> str:
     </div>
 
     <button type="submit">Create it</button>
-    <p class="foot">This makes you a private dashboard link. It's shown once,
-      on the next page — keep it, it's how you get back in.</p>
+    <p class="foot">The next page gives you a private dashboard link. Save it
+      there and then — it's the only way back in, and it can't be re-sent.</p>
   </form>
 </div></body></html>"""
 
@@ -405,6 +406,106 @@ async def create_venue(request: Request) -> Any:
 
     _record_signup(request)
     secret = issue_dashboard_token(business.id, label="self-serve signup")
-    # 303: the browser must GET what comes next, or a refresh re-posts the form
-    # and they onboard themselves twice.
-    return RedirectResponse(f"/dashboard?token={secret}", status_code=303)
+    # 303 to a page that SHOWS them the link, rather than straight into the
+    # dashboard. Straight in looked tidier and quietly stranded people: the
+    # dashboard lifts the token out of the URL into localStorage, so the owner
+    # never saw the one thing they need to get back in from another device --
+    # and nobody can hand it to them later, because only its hash is stored.
+    # Still a redirect, not HTML from the POST: a refresh must not re-post the
+    # form and onboard them twice.
+    return RedirectResponse(f"/start/ready?token={secret}", status_code=303)
+
+
+# --- the link, shown once -----------------------------------------------------
+
+
+def _base_url(request: Request) -> str:
+    """Where this venue's dashboard lives, as the owner should save it.
+
+    DASHBOARD_BASE_URL wins because that is the public name of the service;
+    the request's own host is the fallback for a deployment that has not set
+    it, and is right often enough to be better than nothing.
+    """
+    return (settings.dashboard_base_url or str(request.base_url)).rstrip("/")
+
+
+def _ready_page(*, venue: str, link: str) -> str:
+    from html import escape
+
+    safe_link = escape(link)
+    return f"""<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{escape(venue)} is ready</title>
+<style>{_STYLE}{_READY_STYLE}</style>
+</head><body><div class="wrap">
+  <h1>{escape(venue)} is ready</h1>
+  <p class="lead">One thing to do before you go any further.</p>
+
+  <div class="card">
+    <h2>Save this link</h2>
+    <p class="say">It is the only way into your dashboard. There is no password
+      and no account -- whoever has this link is you. We store it scrambled, so
+      if you lose it we cannot look it up or send it again.</p>
+    <label for="link" class="sr">Your dashboard link</label>
+    <input id="link" value="{safe_link}" readonly onfocus="this.select()">
+    <div class="acts">
+      <button type="button" id="copy" data-link="{safe_link}">Copy link</button>
+      <a class="ghost" href="{safe_link}">Open my dashboard</a>
+    </div>
+    <p class="say">Email it to yourself, or bookmark it on the phone or tablet
+      you will actually use behind the counter.</p>
+  </div>
+</div>
+<script>
+// Progressive: the input is selectable and the link is a plain anchor, so a
+// browser with no clipboard API and no JS at all still hands over the link.
+document.getElementById("copy").addEventListener("click", async function(){{
+  var field = document.getElementById("link");
+  field.select();
+  try {{
+    await navigator.clipboard.writeText(this.dataset.link);
+  }} catch (e) {{
+    try {{ document.execCommand("copy"); }} catch (e2) {{ /* selected; copy by hand */ }}
+  }}
+  this.textContent = "Copied";
+  setTimeout(function(){{ document.getElementById("copy").textContent = "Copy link"; }}, 2000);
+}});
+</script>
+</body></html>"""
+
+
+_READY_STYLE = """
+.say{color:var(--ink-2);font-size:.9rem;margin:0 0 16px}
+.card .say:last-child{margin:16px 0 0}
+#link{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.86rem;
+  background:var(--bg);word-break:break-all}
+.acts{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
+.acts button{width:auto;padding:12px 20px}
+.acts .ghost{display:inline-flex;align-items:center;padding:12px 20px;border-radius:9px;
+  border:1px solid var(--line);color:var(--ink);text-decoration:none;font-weight:500}
+.acts .ghost:hover{border-color:var(--ink)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+"""
+
+
+@router.get("/start/ready", response_class=HTMLResponse)
+def ready(request: Request, token: str = "") -> HTMLResponse:
+    """Show the link once, before anything can swallow it.
+
+    The token is resolved rather than trusted: a page that printed whatever
+    string arrived would happily tell somebody a typo was their way back in.
+    """
+    _require_open()
+    business = business_for_token(token)
+    if business is None:
+        raise HTTPException(404, "Not found")
+    identity = business.config["identity"]
+    return HTMLResponse(
+        _ready_page(
+            venue=identity["display_name"] or business.name,
+            link=f"{_base_url(request)}/dashboard?token={token}",
+        )
+    )

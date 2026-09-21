@@ -60,15 +60,21 @@ def submit(client, **changes):
     return client.post("/start", data=form)
 
 
+def token_from(response):
+    """The dashboard token a successful submission minted."""
+    assert response.status_code == 303, response.text[:400]
+    assert response.headers["location"].startswith("/start/ready?token=")
+    return response.headers["location"].split("token=")[1]
+
+
 def venue_from(response):
     """The business that submission actually created.
 
     Resolved through the link it handed back rather than a guessed slug, so
     the test can only ever be looking at the row it just made.
     """
-    token = response.headers["location"].split("token=")[1]
     client = TestClient(app)
-    client.headers.update({"X-Tableline-Token": token})
+    client.headers.update({"X-Tableline-Token": token_from(response)})
     return businesses.by_id(client.get("/api/bootstrap").json()["business"]["id"])
 
 
@@ -173,7 +179,7 @@ def test_the_link_it_hands_back_opens_that_venue_and_nothing_else(open_signup):
     other = businesses.by_slug("default-test-venue")
     name = unique_name("Token Test")
     created = submit(open_signup, name=name, phone=a_number())
-    token = created.headers["location"].split("token=")[1]
+    token = token_from(created)
 
     client = TestClient(app)
     client.headers.update({"X-Tableline-Token": token})
@@ -245,3 +251,53 @@ def test_nothing_is_created_when_a_submission_is_refused(open_signup):
     assert submit(open_signup, name=name, days=[]).status_code == 200
     with pytest.raises(businesses.UnknownBusiness):
         businesses.by_slug(signup.slugify(name))
+
+
+# --- the link, shown once -----------------------------------------------------
+
+
+def test_the_owner_is_shown_their_link_before_the_dashboard_swallows_it(open_signup):
+    """The whole reason this page exists. Redirecting straight into the
+    dashboard looked tidier and quietly stranded people: app.js lifts the token
+    out of the URL into localStorage, so the owner never saw the one thing they
+    need on a second device -- and nobody can hand it to them afterwards,
+    because only its hash is stored."""
+    name = unique_name("Shown Once")
+    created = submit(open_signup, name=name)
+    token = token_from(created)
+
+    page = open_signup.get(f"/start/ready?token={token}")
+    assert page.status_code == 200
+    assert token in page.text, "the link itself has to be on the page, not just a button"
+    assert f"/dashboard?token={token}" in page.text
+    assert name in page.text
+    assert "cannot look it up" in page.text, "it must say the link is unrecoverable"
+
+
+def test_the_link_page_resolves_the_token_rather_than_printing_what_it_is_given(open_signup):
+    """A page that echoed any string would cheerfully tell somebody a typo was
+    their way back in."""
+    assert open_signup.get("/start/ready?token=not-a-real-token").status_code == 404
+    assert open_signup.get("/start/ready").status_code == 404
+
+
+def test_the_link_page_is_gone_when_signup_is_off(monkeypatch, open_signup):
+    token = token_from(submit(open_signup))
+    monkeypatch.setattr(settings, "signup_enabled", False)
+    assert TestClient(app).get(f"/start/ready?token={token}").status_code == 404
+
+
+def test_the_link_on_the_page_is_the_one_that_actually_opens_the_dashboard(open_signup):
+    """End to end: whatever that page tells them to save must work when pasted
+    into a browser that has never seen this venue."""
+    import re as _re
+
+    name = unique_name("Paste Me")
+    page = open_signup.get(f"/start/ready?token={token_from(submit(open_signup, name=name))}")
+    link = _re.search(r'id="link" value="([^"]+)"', page.text).group(1)
+
+    fresh = TestClient(app)  # no localStorage, no headers -- just the pasted URL
+    assert fresh.get(link.replace("http://testserver", "")).status_code == 200
+    bootstrap = fresh.get("/api/bootstrap?token=" + link.split("token=")[1])
+    assert bootstrap.status_code == 200
+    assert bootstrap.json()["business"]["name"] == name

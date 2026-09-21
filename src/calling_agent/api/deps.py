@@ -26,8 +26,12 @@ from ..db import fetch_one, transaction
 log = logging.getLogger(__name__)
 
 
-def _from_token(raw_token: str) -> Business | None:
-    """Look a dashboard token up by its hash, and refuse a dead one."""
+def business_for_token(raw_token: str) -> Business | None:
+    """Look a dashboard token up by its hash, and refuse a dead one.
+
+    Public because the signup page resolves a freshly minted token the same
+    way a request does, rather than trusting the string it was handed back.
+    """
     if not raw_token:
         return None
     with transaction() as conn:
@@ -83,7 +87,7 @@ def current_business(
         or ""
     ).strip()
 
-    found = _from_token(raw)
+    found = business_for_token(raw)
     if found is not None:
         return found
 
