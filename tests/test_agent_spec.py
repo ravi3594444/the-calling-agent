@@ -427,3 +427,95 @@ def test_business_info_answers_from_the_venue_fields():
     said = agent_tools.business_info(business, {})
     assert "Wheelchair access: Step-free from the street." in said
     assert said.data["venue"] == {"Wheelchair access": "Step-free from the street"}
+
+
+def test_things_people_ask_reach_the_prompt():
+    """The venue block covers what every venue is asked; this covers what THIS
+    one is asked -- the questions no fixed field could have anticipated."""
+    from calling_agent.agent_config import build_prompt_for, faq_block_for
+
+    business = make_business(
+        config={
+            "venue": {
+                "faq": [
+                    {"q": "Do you do gift vouchers?", "a": "Yes, any amount, at the bar."},
+                    {"q": "Can I bring my dog?", "a": "Outside tables only."},
+                ]
+            }
+        }
+    )
+    block = faq_block_for(business)
+    assert "Do you do gift vouchers?" in block
+    assert "Yes, any amount, at the bar." in block
+    assert "Outside tables only." in block
+    assert "THINGS PEOPLE ASK" in build_prompt_for(business)
+
+    silent = make_business()
+    assert faq_block_for(silent) == "", "nothing set, nothing said"
+    assert "THINGS PEOPLE ASK" not in build_prompt_for(silent)
+
+
+def test_the_prompt_drops_a_half_written_pair_even_if_one_reaches_it():
+    """The second of two guards. Save-time validation refuses a half-written
+    pair, so this is unreachable through the dashboard -- it covers a document
+    written straight to the database, and the rule it enforces is the reason
+    the first guard exists: a question in front of the agent with no answer
+    beside it is an invitation to supply one.
+
+    Built from a stub rather than make_business precisely BECAUSE the fixture
+    validates and would refuse this; that refusal is the other test.
+    """
+    from types import SimpleNamespace
+
+    from calling_agent.agent_config import faq_block_for
+
+    block = faq_block_for(
+        SimpleNamespace(
+            config={
+                "venue": {
+                    "faq": [
+                        {"q": "Do you do gift vouchers?", "a": "Yes, at the bar."},
+                        {"q": "Can I bring my dog?", "a": "   "},
+                        {"q": "", "a": "An answer nobody asked for."},
+                    ]
+                }
+            }
+        )
+    )
+    assert "gift vouchers" in block
+    assert "dog" not in block, "a question with no answer must not reach the agent"
+    assert "nobody asked for" not in block
+    assert faq_block_for(SimpleNamespace(config={})) == "", "no venue section at all"
+
+
+def test_a_question_with_no_answer_is_refused_at_save():
+    """Refused rather than quietly dropped: the owner typed it and meant it,
+    and a form that swallows half a row teaches nobody anything."""
+    from calling_agent import business_config
+
+    for faq, expected in [
+        ([{"q": "Do you do gift vouchers?", "a": ""}], "has no answer"),
+        ([{"q": "  ", "a": "Yes we do."}], "an answer with no question"),
+    ]:
+        with pytest.raises(business_config.ConfigError) as caught:
+            business_config.validate({"venue": {"faq": faq}})
+        assert expected in str(caught.value)
+
+    # Both halves present is fine, and so is no list at all.
+    business_config.validate({"venue": {"faq": [{"q": "Parking?", "a": "Out the back."}]}})
+    business_config.validate({"venue": {}})
+
+
+def test_saving_the_questions_leaves_the_other_venue_facts_alone():
+    """The two cards write the same config section. If saving one replaced the
+    section rather than merging into it, filling in the questions would wipe
+    the parking answer -- and the owner would find out from a caller."""
+    from calling_agent import businesses
+
+    business = make_business(config={"venue": {"parking": "Free after six"}})
+    businesses.save_config(
+        business.id, "venue", {"faq": [{"q": "Vouchers?", "a": "Yes, at the bar."}]}
+    )
+    after = businesses.by_id(business.id).config["venue"]
+    assert after["parking"] == "Free after six", "the fixed fields must survive"
+    assert after["faq"] == [{"q": "Vouchers?", "a": "Yes, at the bar."}]

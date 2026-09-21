@@ -137,7 +137,7 @@ test('reveal has an independent deadline even while its image and bookings are p
     },
   });
   assert.ok(doc.querySelector('#rows .sk'));
-  runTimer(4200);   // REVEAL_TOTAL_MS
+  runTimer(4200); // REVEAL_TOTAL_MS
   assert.equal(doc.getElementById('brandReveal').hidden, true);
   assert.ok(doc.querySelector('#rows .sk'), 'the logo never gates data or replaces its skeleton');
 });
@@ -317,4 +317,74 @@ test('an older filter response cannot overwrite the latest selection', async (t)
   assert.equal(doc.getElementById('dayTitle').textContent, 'This week');
   w.eval('lastSync=Date.now()-121000; freshness();');
   assert.ok(doc.getElementById('live').classList.contains('stale'));
+});
+
+test('the questions card saves pairs, drops blank rows, and leaves the other venue fields alone', async (t) => {
+  const { w, doc, calls } = await dashboard(t, {
+    seen: true,
+    setup(f) {
+      f['/api/bootstrap'].config.venue = {
+        parking: 'Free after six',
+        faq: [{ q: 'Do you do gift vouchers?', a: 'Yes, at the bar.' }],
+      };
+    },
+  });
+  w.showView('settings');
+  await tick();
+
+  // What the owner already wrote comes back into the form.
+  const rows = () => [...doc.querySelectorAll('#faqRows .faq-row')];
+  assert.equal(rows().length, 1);
+  assert.equal(rows()[0].querySelector('[data-faq="q"]').value, 'Do you do gift vouchers?');
+  assert.equal(rows()[0].querySelector('[data-faq="a"]').value, 'Yes, at the bar.');
+
+  // Two more: one answered, one left wholly blank.
+  doc.getElementById('faqAdd').click();
+  doc.getElementById('faqAdd').click();
+  assert.equal(rows().length, 3);
+  const typed = rows()[1];
+  typed.querySelector('[data-faq="q"]').value = 'Can I bring my dog?';
+  typed.querySelector('[data-faq="a"]').value = 'Outside tables only.';
+  typed.querySelector('[data-faq="a"]').dispatchEvent(new w.Event('input', { bubbles: true }));
+  await tick();
+
+  const save = doc.querySelector('#faqCard .save .btn.key');
+  assert.equal(save.disabled, false, 'typing wakes the save button');
+  save.click();
+  await tick();
+
+  const put = calls.filter((c) => c.path === '/api/settings/venue').at(-1);
+  assert.equal(put.method, 'PUT');
+  const sent = JSON.parse(put.body);
+  assert.deepEqual(sent, {
+    faq: [
+      { q: 'Do you do gift vouchers?', a: 'Yes, at the bar.' },
+      { q: 'Can I bring my dog?', a: 'Outside tables only.' },
+    ],
+  });
+  assert.equal('parking' in sent, false, 'the section merges; it must not resend the fixed fields');
+});
+
+test('removing the only question empties it rather than leaving nowhere to type', async (t) => {
+  const { w, doc, calls } = await dashboard(t, {
+    seen: true,
+    setup(f) {
+      f['/api/bootstrap'].config.venue = { faq: [{ q: 'Vouchers?', a: 'Yes.' }] };
+    },
+  });
+  w.showView('settings');
+  await tick();
+
+  doc.querySelector('#faqRows [data-faq-drop]').click();
+  const rows = doc.querySelectorAll('#faqRows .faq-row');
+  assert.equal(rows.length, 1, 'there is always a row to type into');
+  assert.equal(rows[0].querySelector('[data-faq="q"]').value, '');
+
+  const save = doc.querySelector('#faqCard .save .btn.key');
+  assert.equal(save.disabled, false, 'clearing the last one is itself a change');
+  save.click();
+  await tick();
+  assert.deepEqual(JSON.parse(calls.filter((c) => c.path === '/api/settings/venue').at(-1).body), {
+    faq: [],
+  });
 });

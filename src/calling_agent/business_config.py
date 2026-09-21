@@ -59,6 +59,11 @@ DEFAULTS: dict[str, Any] = {
         "getting_there": "",
         "private_room": "",
         "children": "",
+        # The rest of them -- the ones no fixed field could have guessed.
+        # "Do you do gift vouchers?" is not a property of restaurants, it is a
+        # property of this restaurant, so the owner writes the question too.
+        # [{"q": "...", "a": "..."}], in the order they are asked.
+        "faq": [],
     },
     "locale": {
         "country": "IN",
@@ -200,6 +205,23 @@ SCHEMA: dict[str, Any] = {
                     "cuisine", "dress_code", "parking", "wheelchair_access",
                     "getting_there", "private_room", "children",
                 )
+            }
+            | {
+                "faq": {
+                    "type": "array",
+                    # Every one of these is read aloud, so they are capped at a
+                    # sentence or two rather than a paragraph: an agent that
+                    # recites 400 characters has stopped being on a phone call.
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "q": {"type": "string", "maxLength": 200},
+                            "a": {"type": "string", "maxLength": 400},
+                        },
+                    },
+                    "maxItems": 40,
+                },
             },
         },
         "locale": {
@@ -433,6 +455,19 @@ def _semantic_problems(document: dict[str, Any]) -> list[str]:
                     f"messaging.templates.{name}: unknown field {{{field}}}. "
                     f"Available: {', '.join(sorted(TEMPLATE_FIELDS))}"
                 )
+
+    # A question with no answer is the one half-filled row that is worse than
+    # no row at all: it puts the question in front of the agent and leaves it
+    # to invent the rest. An answer with no question is merely orphaned, and
+    # is refused for the same reason -- the owner meant to type something.
+    for index, pair in enumerate(merged["venue"].get("faq") or []):
+        question = (pair.get("q") or "").strip()
+        answer = (pair.get("a") or "").strip()
+        if question and not answer:
+            problems.append(f'venue.faq[{index}]: "{question}" has no answer')
+        elif answer and not question:
+            problems.append(f"venue.faq[{index}]: an answer with no question")
+
     return problems
 
 

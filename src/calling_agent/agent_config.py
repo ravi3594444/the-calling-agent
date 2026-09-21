@@ -98,7 +98,7 @@ CHANGING OR CANCELLING
 Before you cancel anything, ask for the name the booking is under and check it
 matches. The reference is not proof of anything -- it gets read aloud and
 printed in a text.
-{menu_block}{venue_block}
+{menu_block}{venue_block}{faq_block}
 ALLERGIES AND DIET
 Take these seriously; getting one wrong could hurt someone.
 - Say what something contains, not what it is free of, unless you checked.
@@ -207,6 +207,7 @@ def build_prompt_for(business: Business) -> str:
         currency_line=f"Prices are in {locale['currency_name']}.",
         menu_block=MENU_BLOCK if business.config["features"].get("menu") else "",
         venue_block=venue_block_for(business),
+        faq_block=faq_block_for(business),
         languages_line=languages_line,
         never_say_block=never_say_block,
         extra_instructions=f"\n{extra}\n" if extra else "",
@@ -248,6 +249,36 @@ def venue_block_for(business: Business) -> str:
         "Answer these from here, in your own words. Anything not listed, you do\n"
         "not know: offer to check and call back rather than guess.\n"
         + "\n".join(lines) + "\n"
+    )
+
+
+def faq_block_for(business: Business) -> str:
+    """The owner's own answers to the questions no fixed field anticipated.
+
+    The venue block above covers what every venue is asked. This covers what
+    THIS venue is asked -- gift vouchers, the dog, whether the chef will do a
+    cake -- and each of those is a "let me check and call you back" until
+    somebody writes the answer down once.
+
+    A pair missing either half is dropped rather than shown. Half a pair is
+    worse than none: a question in front of the agent with no answer beside it
+    is an invitation to supply one. Save-time validation refuses it too, so
+    this is the second of two guards, not the only one.
+    """
+    pairs = [
+        (q, a)
+        for pair in business.config.get("venue", {}).get("faq") or []
+        if (q := (pair.get("q") or "").strip()) and (a := (pair.get("a") or "").strip())
+    ]
+    if not pairs:
+        return ""
+    return (
+        "\nTHINGS PEOPLE ASK\n"
+        "The answer is the one after the question. Say it in your own words, and\n"
+        "do not read the question back. If someone asks something close to one of\n"
+        "these but not the same, answer only what you were actually asked -- the\n"
+        "rest of this list is not an invitation to guess.\n"
+        + "\n".join(f"- {q}\n  {a}" for q, a in pairs) + "\n"
     )
 
 

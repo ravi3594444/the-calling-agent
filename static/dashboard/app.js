@@ -1146,6 +1146,8 @@ function fillSettings(){
   const buffer=document.querySelector('[data-cfg="capacity.buffer_pct"]');
   if(buffer) buffer.value=Math.round((1-state.config.capacity.sellable_pct)*100);
 
+  drawFaq(state.config.venue && state.config.venue.faq);
+
   document.querySelectorAll("[data-unit-plural]").forEach(el=>{
     el.textContent=state.business.unit_plural;
   });
@@ -1163,11 +1165,74 @@ function updateBufferHelp(){
   help.textContent=`A percentage. The agent sells ${sellable}. The rest is yours at the door.`;
 }
 
+/* ---------------- things people ask ---------------- */
+/* A repeating pair editor rather than the fixed fields above, because these
+   questions differ per venue: "do you do gift vouchers" is a property of this
+   restaurant, not of restaurants. Rows are read back out of the DOM at save
+   rather than mirrored into a second array, so there is nothing to drift. */
+
+function faqRowHTML(pair){
+  const p=pair||{};
+  return `<div class="faq-row">
+    <label class="review-field"><span>They ask</span>
+      <input data-faq="q" maxlength="200" value="${esc(p.q||"")}"
+        placeholder="Do you do gift vouchers?" aria-label="Question"></label>
+    <label class="review-field"><span>You answer</span>
+      <input data-faq="a" maxlength="400" value="${esc(p.a||"")}"
+        placeholder="Yes, any amount — buy them at the bar." aria-label="Answer"></label>
+    <button class="btn no" type="button" data-faq-drop aria-label="Remove this question">Remove</button>
+  </div>`;
+}
+
+/* Always at least one row. An empty card with nothing to type into reads as
+   "not available yet" rather than "you have not added any". */
+function drawFaq(pairs){
+  const host=document.getElementById("faqRows");
+  if(!host) return;
+  const rows=(pairs&&pairs.length)?pairs:[null];
+  host.innerHTML=rows.map(faqRowHTML).join("");
+}
+
+/* A wholly blank row is not an entry and is dropped. A half-filled one is
+   KEPT and refused by the server, which names it -- dropping that silently
+   would throw away what the owner typed without telling them. */
+function collectFaq(){
+  return [...document.querySelectorAll("#faqRows .faq-row")]
+    .map(row=>({
+      q: row.querySelector('[data-faq="q"]').value.trim(),
+      a: row.querySelector('[data-faq="a"]').value.trim(),
+    }))
+    .filter(pair=>pair.q||pair.a);
+}
+
+document.getElementById("faqAdd")?.addEventListener("click",()=>{
+  const host=document.getElementById("faqRows");
+  host.insertAdjacentHTML("beforeend", faqRowHTML());
+  host.lastElementChild.querySelector('[data-faq="q"]').focus();
+});
+
+document.getElementById("faqRows")?.addEventListener("click",e=>{
+  const drop=e.target.closest("[data-faq-drop]");
+  if(!drop) return;
+  const row=drop.closest(".faq-row");
+  // Removing the only row empties it instead, so there is always somewhere to
+  // type -- and clearing it is itself a change worth saving.
+  if(document.querySelectorAll("#faqRows .faq-row").length===1){
+    row.querySelectorAll("input").forEach(input=>{ input.value=""; });
+  } else {
+    row.remove();
+  }
+  document.getElementById("faqCard").dispatchEvent(new Event("input",{bubbles:true}));
+});
+
 /* Collect a card's fields, grouped by the section each one belongs to.
    Hours are the one card that does not map to config -- they are
    capacity_rules -- so they are taken first and separately. */
 function collectCard(card){
   if(card.id==="hoursCard") return {hours:{rules: collectHours()}};
+  // Pairs, not data-cfg fields: one section with one list in it. The venue
+  // section deep-merges, so this leaves the fixed venue fields alone.
+  if(card.id==="faqCard") return {venue:{faq: collectFaq()}};
 
   const sections={};
   card.querySelectorAll("[data-cfg]").forEach(el=>{
