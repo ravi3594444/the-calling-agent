@@ -153,19 +153,40 @@ def migrate() -> list[str]:
     return applied
 
 
+def pending_migrations() -> list[str]:
+    """Shipped migrations this database has not applied, in the order they run.
+
+    Exact rather than a heuristic: the files in sql/ minus the names recorded
+    in schema_migrations. A database with no schema_migrations table at all has
+    never been migrated, so everything is pending.
+    """
+    with readonly() as conn:
+        has_table = conn.execute(
+            text("SELECT to_regclass('public.schema_migrations') IS NOT NULL")
+        ).scalar()
+        applied = (
+            {row[0] for row in conn.execute(text("SELECT name FROM schema_migrations"))}
+            if has_table
+            else set()
+        )
+    return [name for name, _ in migration_files() if name not in applied]
+
+
 def healthy() -> tuple[bool, str]:
-    """Is the database reachable and migrated? Used by /api/health."""
+    """Is the database reachable and FULLY migrated? Used by /healthz.
+
+    Fully: every migration this build ships is recorded as applied. The check
+    this replaces asked whether `slots` and `bookings` exist, which any database
+    migrated at least once passes -- including the one a deploy that forgot
+    `cli migrate` is running against, right up until the first query touches
+    the column the new migration added. The report names what is missing, so
+    the fix is readable from the probe.
+    """
     try:
-        with readonly() as conn:
-            conn.execute(text("SELECT 1"))
-            missing = conn.execute(
-                text(
-                    "SELECT to_regclass('public.slots') IS NULL"
-                    " OR to_regclass('public.bookings') IS NULL"
-                )
-            ).scalar()
+        pending = pending_migrations()
     except Exception as exc:  # noqa: BLE001 - the report is the point
         return False, str(exc).splitlines()[0][:200]
-    if missing:
-        return False, "schema not migrated"
+    if pending:
+        shown = ", ".join(pending[:3]) + (", …" if len(pending) > 3 else "")
+        return False, f"{len(pending)} migration(s) pending: {shown}"
     return True, "ok"

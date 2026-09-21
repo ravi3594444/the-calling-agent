@@ -137,7 +137,7 @@ test('reveal has an independent deadline even while its image and bookings are p
     },
   });
   assert.ok(doc.querySelector('#rows .sk'));
-  runTimer(4200);   // REVEAL_TOTAL_MS
+  runTimer(4200); // REVEAL_TOTAL_MS
   assert.equal(doc.getElementById('brandReveal').hidden, true);
   assert.ok(doc.querySelector('#rows .sk'), 'the logo never gates data or replaces its skeleton');
 });

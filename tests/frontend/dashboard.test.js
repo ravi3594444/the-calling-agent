@@ -99,7 +99,10 @@ test('the reveal is decided before the first paint, not by the deferred script',
   // And it must end on its own: the animation finishes hidden, so a failure
   // in app.js leaves a usable page rather than a covered one.
   assert.match(css, /@keyframes reveal-out\{to\{opacity:0;visibility:hidden\}\}/);
-  assert.match(css, /animation:reveal-out var\(--reveal-fade,\.5s\).*var\(--reveal-hold,3500ms\) forwards/);
+  assert.match(
+    css,
+    /animation:reveal-out var\(--reveal-fade,\.5s\).*var\(--reveal-hold,3500ms\) forwards/,
+  );
 });
 
 test('the logo is only requested when the reveal will actually play', () => {

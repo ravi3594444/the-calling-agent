@@ -28,8 +28,15 @@ Working end to end, proven on live calls unless noted.
 | **Locale, booking window, optional capacity, channel choice** (§15b–e) | Done. |
 | **Venue facts** | Cuisine, getting there, parking, wheelchair access, children, dress code, private room. The agent answers from them. |
 
-**Tests:** 223 backend, 47 frontend, ruff clean. Backend needs a Postgres —
-see `TEST_DATABASE_URL` in `tests/conftest.py`.
+**Tests:** 225 backend, 47 frontend, ruff clean. Backend needs a Postgres —
+see `TEST_DATABASE_URL` in `tests/conftest.py`. Plain `pytest` works from a
+clean checkout (`pythonpath` in `pyproject.toml`; before that, CI had never
+once collected the suite). CI installs against `constraints.txt` — the exact
+versions last verified, refreshed on purpose; see its header.
+
+**Health:** `/healthz` names any shipped migration the database has not
+applied. A deploy that forgot `cli migrate` reads `degraded` with the file
+name in it, instead of `ok` until the first request touches the new column.
 
 ---
 
