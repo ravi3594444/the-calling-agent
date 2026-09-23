@@ -79,3 +79,8 @@ extend-immutable-calls = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# The test modules import their shared helpers as `tests.conftest`. Without
+# this, `pytest` from a clean checkout -- which is what CI is -- fails at
+# collection with "No module named 'tests'", and did on every run. It passed
+# locally only where something had already put the repo root on sys.path.
+pythonpath = ["."]

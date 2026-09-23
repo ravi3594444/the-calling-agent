@@ -183,6 +183,67 @@ async def test_duplicate_tool_call_executes_side_effect_once():
     assert upstream.sent[0] == upstream.sent[1]
 
 
+async def test_a_tool_that_raises_answers_the_agent_instead_of_ending_the_call():
+    """run_tool must not raise, but an AGENT_FACTORY agent is someone else's code.
+
+    Mutation: without the guard the exception escapes the worker, the pump
+    ends, and the agent waits forever on a result that is never sent.
+    """
+
+    def broken(*_args):
+        raise ConnectionError("database for +91 98765 43210 is down")
+
+    agent = _agent_running(broken)
+    agent._last_event = "reply.done"  # results may be released
+    upstream = Upstream()
+    await agent._handle_tool_call(upstream, {"name": "book_table", "call_id": "boom-1"})
+
+    assert upstream.sent == [
+        {
+            "type": "tool.result",
+            "call_id": "boom-1",
+            "result": "Error running book_table: database for +91 98765 43210 is down",
+            "is_error": True,
+        }
+    ]
+    statuses = [e["status"] for e in agent._transport.events if e["type"] == "tool.activity"]
+    assert statuses == ["started", "error"]
+
+
+async def test_an_unexpected_relay_failure_still_tells_the_caller(monkeypatch):
+    """A bug must cost the call with a reason, not leave a silently closed socket."""
+    monkeypatch.setattr(settings, "assemblyai_api_key", "test-key")
+
+    def no_prompt():
+        raise KeyError("prompt")
+
+    transport = Transport()
+    agent = session_module.AgentSession(
+        transport,
+        agent=AgentDefinition(
+            name="test",
+            build_prompt=no_prompt,
+            greeting="hi",
+            tools=[],
+            run_tool=lambda *_: ("", False),
+        ),
+    )
+
+    class Connected:
+        async def __aenter__(self):
+            return Upstream()
+
+        async def __aexit__(self, *_):
+            return False
+
+    monkeypatch.setattr(session_module.websockets, "connect", lambda *a, **k: Connected())
+    await agent.run()
+
+    assert transport.closed
+    assert transport.events[-1]["type"] == "error"
+    assert "failed on the server" in transport.events[-1]["message"]
+
+
 async def test_cancelled_pump_cleans_up_worker_and_guard():
     agent = session_module.AgentSession(Transport())
     upstream = Upstream()
