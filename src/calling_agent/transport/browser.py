@@ -43,14 +43,24 @@ class BrowserTransport(AudioTransport):
     async def recv_audio(self) -> AsyncIterator[str]:
         try:
             while True:
-                msg = await self._ws.receive_json()
+                try:
+                    msg = await self._ws.receive_json()
+                except (ValueError, KeyError, TypeError) as exc:
+                    # One malformed frame (bad JSON, a binary frame) costs that
+                    # frame. Ending the stream here hung up the whole call.
+                    log.debug("skipping malformed frame from browser: %s", exc)
+                    continue
+                # Valid JSON is not necessarily an object; `[1]` raised
+                # AttributeError here, which nothing caught.
+                if not isinstance(msg, dict):
+                    continue
                 if msg.get("type") == "audio" and (data := msg.get("data")):
                     yield data
         except WebSocketDisconnect:
             log.info("browser disconnected")
-        except (ValueError, RuntimeError, KeyError) as exc:
-            # Malformed frame or socket torn down underneath us; end the stream
-            # rather than killing the whole session with a traceback.
+        except RuntimeError as exc:
+            # Socket torn down underneath us; end the stream rather than
+            # killing the whole session with a traceback.
             log.info("browser stream ended: %s", exc)
 
     async def _send(self, payload: dict) -> None:

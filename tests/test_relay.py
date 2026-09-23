@@ -286,6 +286,55 @@ def test_rejected_session_is_explained_to_the_client(upstream):
     assert "configuration problem" in event["message"]
 
 
+def test_a_close_that_ends_the_call_early_is_explained(upstream):
+    """Only a 1008 refusal is retried, so any other close must be reported.
+
+    Mutation: reporting on the last planned attempt alone sent the page nothing
+    at all here -- the first attempt is not the last, and it is not retried.
+    """
+    upstream.will_reject(4001, "insufficient balance")
+    with _client().websocket_connect("/ws") as ws:
+        event = _drain(ws, "event")["event"]
+
+    assert event["type"] == "error"
+    assert event["code"] == 4001
+    assert "insufficient balance" in event["message"]
+    opens = [m for m in upstream.received if m["type"] == "session.update"]
+    assert len(opens) == 1, "a non-1008 close is not a payload problem; do not retry"
+
+
+def test_a_refused_resume_is_explained(upstream):
+    """A resume is never retried, so its refusal is the last word on the call."""
+    upstream.will_reject(1008, "session expired")
+    with _client().websocket_connect("/ws?resume=s-old") as ws:
+        event = _drain(ws, "event")["event"]
+
+    assert event["type"] == "error"
+    assert event["fatal"] is True
+    assert "resume" in event["message"]
+    assert "session expired" in event["message"]
+    # A resume sends only the id; blaming the payload would send people hunting.
+    assert "configuration problem" not in event["message"]
+
+
+def test_a_malformed_browser_frame_costs_the_frame_not_the_call(upstream):
+    """Mutation: letting `[1, 2]` reach msg.get raised AttributeError and hung up."""
+    upstream.will_send({"type": "session.ready", "session_id": "s-frames"})
+    with _client().websocket_connect("/ws") as ws:
+        _drain(ws, "event")
+        ws.send_text("[1, 2]")
+        ws.send_text("not json")
+        ws.send_bytes(b"\x00\x01")
+        ws.send_json({"type": "audio", "data": "AAAA"})
+        for _ in range(50):
+            if any(m["type"] == "input.audio" for m in upstream.received):
+                break
+            threading.Event().wait(0.02)
+
+    audio = [m for m in upstream.received if m["type"] == "input.audio"]
+    assert audio and audio[0]["audio"] == "AAAA"
+
+
 class _FakeUpstream:
     """Only the close attributes _report_close reads."""
 

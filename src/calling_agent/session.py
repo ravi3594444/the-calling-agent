@@ -173,7 +173,7 @@ class AgentSession:
                     if dropped
                     else None
                 )
-                refused = await self._attempt(tune_turns=tune_turns, voice=voice, report_close=last)
+                refused = await self._attempt(tune_turns=tune_turns, voice=voice, last=last)
                 if not refused or last:
                     return
         except websockets.InvalidStatus as exc:
@@ -195,16 +195,31 @@ class AgentSession:
             await self._transport.send_event(
                 {"type": "error", "fatal": False, "message": f"Could not reach AssemblyAI: {exc}"}
             )
+        except websockets.WebSocketException as exc:
+            # Any other handshake failure, or the socket dropping while the
+            # opening message was sent. Escaping here used to close the page's
+            # socket with no reason given and leave a traceback in the ASGI log.
+            log.error("upstream connection failed: %s", exc)
+            await self._transport.send_event(
+                {"type": "error", "fatal": False, "message": f"AssemblyAI connection failed: {exc}"}
+            )
+        except Exception:
+            # A bug, or an agent from AGENT_FACTORY whose build_prompt raised.
+            # The caller still deserves a reason rather than a dead socket.
+            log.exception("relay failed")
+            await self._transport.send_event(
+                {"type": "error", "message": "The call failed on the server. Please try again."}
+            )
         finally:
             await self._transport.close()
 
-    async def _attempt(
-        self, *, tune_turns: bool, report_close: bool, voice: str | None = None
-    ) -> bool:
+    async def _attempt(self, *, tune_turns: bool, last: bool, voice: str | None = None) -> bool:
         """Open one upstream session and pump it until it ends.
 
         Returns True if the session was refused before it ever became ready,
         which is the only case worth retrying with a smaller payload.
+
+        `last` means no retry follows, so even a refusal is reported.
         """
         self._ready = False
         async with websockets.connect(
@@ -230,16 +245,23 @@ class AgentSession:
                 self._transport.sample_rate,
                 tune_turns,
             )
-            await self._pump(upstream, report_close=report_close)
+            await self._pump(upstream)
 
             # Whether this attempt was refused, not whether it is worth
             # retrying -- that decision belongs to the caller's plan. Tying it
             # to tune_turns here made every later attempt look like a success.
-            if self._resume_session_id:
-                return False
-            return not self._ready and upstream.close_code == 1008
+            refused = (
+                not self._resume_session_id and not self._ready and upstream.close_code == 1008
+            )
+            # Stay quiet only about a refusal the plan is about to retry. Keying
+            # this on `last` alone silenced every close that ends the call on
+            # an earlier attempt -- a refused resume, or a fresh session closed
+            # with anything but 1008 -- so the page saw a bare disconnect.
+            if last or not refused:
+                await self._report_close(upstream)
+            return refused
 
-    async def _pump(self, upstream: ClientConnection, *, report_close: bool = True) -> None:
+    async def _pump(self, upstream: ClientConnection) -> None:
         """Run both directions concurrently; stop as soon as either finishes."""
         up = asyncio.create_task(self._client_to_agent(upstream), name="client->agent")
         down = asyncio.create_task(self._agent_to_client(upstream), name="agent->client")
@@ -263,9 +285,6 @@ class AgentSession:
             self._abandoned_turn = False
             self._tool_queue = asyncio.Queue(maxsize=16)
 
-        if report_close:
-            await self._report_close(upstream)
-
     async def _report_close(self, upstream: ClientConnection) -> None:
         """Explain an abnormal upstream close to the client.
 
@@ -281,7 +300,14 @@ class AgentSession:
         reason = (upstream.close_reason or "").strip()
         log.error("upstream closed: code=%s reason=%r", code, reason)
 
-        if code == 1008:
+        if code == 1008 and self._resume_session_id:
+            # Usually a session that outlived the resume window. The payload is
+            # not ours to blame -- a resume sends nothing but the id.
+            message = (
+                "AssemblyAI could not resume the conversation "
+                f"({reason or 'no reason given'}). Please start a new one."
+            )
+        elif code == 1008:
             detail = reason or "no reason given"
             message = (
                 f"AssemblyAI rejected the session (1008 policy violation): {detail}. "
@@ -422,9 +448,18 @@ class AgentSession:
                 {"type": "tool.activity", "status": "started", "name": name, "call_id": call_id}
             )
             started = perf_counter()
-            result, is_error = await asyncio.to_thread(
-                self._agent.run_tool, name, args, call_id or ""
-            )
+            try:
+                result, is_error = await asyncio.to_thread(
+                    self._agent.run_tool, name, args, call_id or ""
+                )
+            except Exception as exc:
+                # run_tool is documented not to raise, but an agent from
+                # AGENT_FACTORY is someone else's code. Raising here killed the
+                # worker, which ended the call with the agent still waiting on
+                # this result. Logged by type only: the message may quote the
+                # caller's details.
+                log.error("tool %s raised %s", name, type(exc).__name__)
+                result, is_error = f"Error running {name}: {exc}", True
             elapsed_ms = round((perf_counter() - started) * 1000)
             # Do not put caller names, phone numbers or booking notes in logs.
             log.info("tool %s completed in %dms (error=%s)", name, elapsed_ms, is_error)
