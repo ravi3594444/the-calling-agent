@@ -1,0 +1,1329 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tableline UGC film</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #050607; overflow: hidden; }
+  body { display: grid; place-items: center; }
+  canvas { height: 100vh; width: auto; max-width: 100vw; aspect-ratio: 9 / 16; }
+  #hint { position: fixed; bottom: 14px; left: 0; right: 0; text-align: center; color: #9ba3ad;
+          font: 500 13px/1.4 system-ui, sans-serif; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<div id="hint">Click anywhere to restart with sound</div>
+<script>
+'use strict';
+// Tableline: a 34-second vertical UGC-style film where every frame is drawn on a canvas.
+//
+// Contract (render.mjs relies on it): draw(frame) is a pure function of the frame number.
+// No Math.random, no Date, no requestAnimationFrame state: rng()/hash2()/vnoise() only.
+// The soundtrack is synthesized with Web Audio from the same beat grid and event list,
+// so every cut and every on-screen action has its sound on the same frame.
+// Method: iart-ai/javascript-animation-skills (MIT): storyboard as data, one world seen
+// through many cameras, boil on the hand-drawn marks, self-checked before delivery.
+// The only thing loaded is the app's own Manrope font (static/fonts, SIL OFL).
+
+const W = 1080, H = 1920, FPS = 30, DUR = 34, FRAMES = FPS * DUR;
+const cv = document.getElementById('c');
+let ctx = cv.getContext('2d');
+
+const FONTS_READY = Promise.all([500, 600, 700, 800].map(w =>
+  new FontFace('Manrope', `url('../../static/fonts/manrope-${w}.woff2')`, { weight: String(w) })
+    .load().then(f => document.fonts.add(f))))
+  .catch(e => console.warn('Manrope did not load; drawing with a fallback face.', e))
+  .then(() => MEMO.clear());
+const F = (w, s) => `${w} ${s}px Manrope, "Helvetica Neue", Arial, sans-serif`;
+
+// Tableline's own palette (static/styles.css), plus a coral for the problem and copper
+// for candlelight in the room.
+const C = {
+  bg: '#08090b', panel: '#101214', soft: '#15181b', raised: '#1b1e22', line: '#2b3037',
+  lineStrong: '#3a414a', text: '#f5f7fa', muted: '#9ba3ad', lime: '#c8f36a', limeInk: '#243217',
+  coral: '#ff796b', coralInk: '#2a0d09', copper: '#d08a55',
+};
+
+// ---------- math ----------
+const clamp = (x, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, x));
+const lerp = (a, z, t) => a + (z - a) * t;
+const prog = (t, a, z) => clamp((t - a) / (z - a));
+const ease = t => { t = clamp(t); return t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; };
+const easeOut = t => 1 - Math.pow(1 - clamp(t), 3);
+const expo = t => { t = clamp(t); return t === 1 ? 1 : 1 - Math.pow(2, -10 * t); };
+const back = t => { t = clamp(t); const c = 1.7; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); };
+function hash2(a, z) {
+  let n = Math.imul(a | 0, 374761393) + Math.imul(z | 0, 668265263);
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
+}
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  return lerp(lerp(hash2(xi, yi), hash2(xi + 1, yi), u), lerp(hash2(xi, yi + 1), hash2(xi + 1, yi + 1), u), v);
+}
+function rng(seed) { let a = seed | 0; return () => { a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const MEMO = new Map();
+const memo = (key, fn) => { if (!MEMO.has(key)) MEMO.set(key, fn()); return MEMO.get(key); };
+
+// ---------- storyboard: the single source of truth ----------
+// 120 bpm, a bar is two seconds, every cut sits on a downbeat. Scenes, cameras and the
+// score all read these tables.
+const BPM = 120, BEAT = 60 / BPM, BAR = 4 * BEAT, bt = n => n * BEAT;
+const SHOTS = [
+  { id: 'S1', from: bt(0), to: bt(4), world: 'floor' },    // ECU: the phone on the host stand rings
+  { id: 'S2', from: bt(4), to: bt(8), world: 'floor' },    // missed calls stack up, one per beat
+  { id: 'S3', from: bt(8), to: bt(12), world: 'floor' },   // pull out of the phone: a packed room, every hand busy
+  { id: 'S4', from: bt(12), to: bt(16), world: 'floor' },  // push in: the call that was a booking, struck out (music drops out)
+  { id: 'S5', from: bt(16), to: bt(20), world: 'title' },  // the drop: tableline. logo, morphs into the phone
+  { id: 'S6', from: bt(20), to: bt(24), world: 'studio' }, // the call studio; a guest taps Start conversation
+  { id: 'S7', from: bt(24), to: bt(28), world: 'studio' }, // orb listens, the guest's words transcribe live
+  { id: 'S8', from: bt(28), to: bt(32), world: 'studio' }, // the availability tool runs
+  { id: 'S9', from: bt(32), to: bt(36), world: 'studio' }, // the host answers
+  { id: 'S10', from: bt(36), to: bt(40), world: 'studio' }, // the guest cuts in to change the time
+  { id: 'S11', from: bt(40), to: bt(44), world: 'studio' }, // reservation receipt
+  { id: 'S12', from: bt(44), to: bt(48), world: 'studio' }, // menu question, allergens
+  { id: 'S13', from: bt(48), to: bt(52), world: 'studio' }, // Hindi / English voice, a Hinglish turn
+  { id: 'S14', from: bt(52), to: bt(56), world: 'studio' }, // pull out: three things off the plate
+  { id: 'S15', from: bt(56), to: bt(60), world: 'floor' },  // back in the room: the party arrives, the team is with guests
+  { id: 'S16', from: bt(60), to: DUR, world: 'end' },       // end card and call to action
+];
+const shotAt = t => SHOTS.find(s => t >= s.from && t < s.to) || SHOTS[SHOTS.length - 1];
+
+// On-screen captions, TikTok style: one box per line, [brackets] mark the highlighted phrase.
+// [text, second it appears, per-word stagger]
+const CAPTIONS = [
+  { from: 0, to: 2, hl: 'coral', lines: [['POV: it’s Saturday, 8 PM', 0], ['and we’re [slammed.]', .9]] },
+  { from: 2, to: 4, hl: 'coral', lines: [['the phone', 2], ['won’t', 2.5], ['[stop.]', 3]] },
+  { from: 4, to: 6, hl: 'coral', lines: [['my team’s hands', 4.1], ['are [full.]', 4.5]] },
+  { from: 6, to: 8, hl: 'coral', lines: [['every missed call', 6.1], ['= a [lost booking.]', 6.6]] },
+  { from: 8, to: 10, hl: 'lime', lines: [['so we got', 8.05], ['an [AI host.]', 8.5]] },
+  { from: 10, to: 11, hl: 'lime', lines: [['guests tap [start]', 10.05], ['on our site…', 10.35]] },
+  { from: 11, to: 12, hl: 'lime', lines: [['…and just [talk.]', 11.1]] },
+  { from: 12, to: 14, hl: 'lime', lines: [['it [listens]…', 12.1]] },
+  { from: 14, to: 16, hl: 'lime', lines: [['checks our tables', 14.05], ['in [real time]', 14.45]] },
+  { from: 16, to: 18, hl: 'lime', lines: [['answers like', 16.05], ['our [best host.]', 16.4]] },
+  { from: 18, to: 20, hl: 'lime', lines: [['change of plan?', 18.05], ['just [cut in.]', 18.5]] },
+  { from: 20, to: 22, hl: 'lime', lines: [['[booked.]', 20.4], ['reference code and all.', 20.75]] },
+  { from: 22, to: 24, hl: 'lime', lines: [['knows the menu.', 22.05], ['even [allergens.]', 23.1]] },
+  { from: 24, to: 26, hl: 'lime', lines: [['it even speaks', 24.05], ['[Hinglish.]', 24.45]] },
+  { from: 26, to: 28, hl: 'lime', lines: [['one call.', 26.05], ['[three things] off our plate.', 26.4]] },
+  { from: 28, to: 30, hl: 'lime', lines: [['so my team stays', 28.05], ['with the [guests.]', 28.45]] },
+];
+
+// The conversation shown in the app, in the product's own words: the default greeting,
+// the tool names from app.js and the tool results from restaurant.py. Menu facts are
+// from menu.py (Palak Paneer: spice 0, contains dairy; Dal Makhani: contains dairy).
+const CALL_START = 11.35;
+const TURNS = [
+  { at: 11.5, who: 'ai', dur: .8, text: 'Thanks for calling The Copper Kettle, this is Meera. How can I help?' },
+  { at: 12.3, who: 'you', dur: 1.1, text: 'Hi, could I book a table for four tomorrow evening at 7\u00A0pm?' },
+  { at: 14.0, act: 'Checking table availability', done: 14.6, result: 'Yes, Sunday 27 September at 19:00 is available for 4.' },
+  { at: 16.0, who: 'ai', dur: 1.3, text: 'There’s a table for four tomorrow at 7. Shall I reserve it for you?' },
+  { at: 18.0, who: 'ai', dur: .5, cut: true, text: 'Lovely. I’ll just need a name for—' },
+  { at: 18.5, who: 'you', dur: 1.0, text: 'Actually, can we make it 7:30 instead? The name’s Alex.' },
+  { at: 20.0, act: 'Reservation request', done: 20.35, result: 'Booked: 4 for Alex, Sunday 27 September at 19:30. The reference is K\u00A07\u00A0M\u00A04\u00A0Q.' },
+  { at: 21.0, who: 'ai', dur: .9, text: 'You’re all set, Alex. Your reference is K\u00A07\u00A0M\u00A04\u00A0Q.' },
+  { at: 22.1, who: 'you', dur: .5, text: 'What’s good for vegetarians?' },
+  { at: 22.7, act: 'Finding the right dishes', done: 23.0, result: 'Vegetarian: Palak Paneer, Dal Makhani. Both contain dairy.' },
+  { at: 23.1, who: 'ai', dur: .6, text: 'Palak Paneer and Dal Makhani are lovely. Both are vegetarian, and both contain\u00A0dairy.' },
+  { at: 24.1, who: 'you', dur: .55, text: 'Palak Paneer zyada teekha toh nahi hai?' },
+  { at: 24.7, act: 'Checking dish details', done: 24.9, result: 'Palak Paneer, 420 rupees. Spinach and cottage cheese, mild. Contains dairy.' },
+  { at: 25.0, who: 'ai', dur: .5, text: 'Bilkul nahi! Palak Paneer ekdum mild hai.' },
+];
+const RECEIPT_AT = 20.4;
+const RECEIPT = [['GUEST', 'Alex'], ['PARTY SIZE', '4 guests'], ['WHEN', '2026-09-27 · 19:30'], ['REFERENCE', 'K7M4Q']];
+// what the call studio shows, phase by phase (phase copy is from app.js)
+const PHASES = [[0, 'idle'], [11.0, 'connecting'], [11.35, 'speaking'], [12.2, 'hearing'], [13.5, 'thinking'],
+  [14.0, 'working'], [14.7, 'thinking'], [16.0, 'speaking'], [18.5, 'hearing'], [19.6, 'working'], [20.5, 'speaking'],
+  [22.0, 'hearing'], [22.65, 'working'], [23.05, 'speaking'], [24.0, 'hearing'], [24.65, 'working'], [24.95, 'speaking'],
+  [26.0, 'listening']];
+const PHASE_COPY = {
+  idle: ['Good conversations start here.', 'Ask for a table, explore the menu, or plan your visit.'],
+  connecting: ['A warm welcome is on the way.', 'Connecting you to your host…'],
+  listening: ['You have our attention.', 'Go ahead. Your host is listening.'],
+  hearing: ['We’re listening.', 'Take your time. Tell us what you have in mind.'],
+  thinking: ['One moment, thoughtfully spent.', 'Your host is preparing a reply.'],
+  working: ['Taking care of the details.', 'Checking with the restaurant…'],
+  speaking: ['A little hospitality, in every word.', 'Your host is speaking. You can interrupt naturally.'],
+};
+const phaseAt = t => { let p = 'idle'; for (const [at, name] of PHASES) if (t >= at) p = name; return p; };
+
+// Every visible action with a sound: [seconds, sfx, arg]. The score plays these.
+const EVENTS = [
+  [0, 'ring'], [1, 'ring'],
+  [2, 'missed', 0], [2.5, 'missed', 1], [3, 'missed', 2], [3.5, 'missed', 3],
+  [4, 'whooshOut'], [4.6, 'ringSoft'],
+  [6.3, 'pop', 0], [6.9, 'swish'], [7.05, 'swish'], [6.9, 'riser'], [7, 'roll'], [7.4, 'sadDown'],
+  [8, 'pop', 0], [8.1, 'pop', 1], [8.2, 'pop', 2], [8.3, 'pop', 3], [9, 'ding'], [9.4, 'whooshIn'],
+  [10, 'whoosh'], [10.4, 'swish'], [11, 'tap'], [11.35, 'notify'],
+  [12, 'whoosh'], [12.3, 'blip', 0], [12.8, 'whoosh'],
+  [14, 'switch'], [14.6, 'ding'], [15, 'swish'],
+  [16, 'blip', 1],
+  [18, 'blip', 1], [18.5, 'clack'], [18.52, 'blip', 0],
+  [20, 'switch'], [20.4, 'flag'], [20.9, 'swish'], [21, 'blip', 1],
+  [22, 'whoosh'], [22.1, 'blip', 0], [22.7, 'switch'], [23, 'ding'], [23.1, 'blip', 1], [23.72, 'swish'],
+  [24, 'whoosh'], [24.2, 'swish'], [24.6, 'whoosh'], [24.7, 'switch'], [24.9, 'ding'], [25, 'blip', 1],
+  [26, 'whooshOut'], [26.1, 'popLow', 0], [26.45, 'popLow', 1], [26.8, 'popLow', 2],
+  [28, 'whoosh'], [29.3, 'pop', 2],
+  [30, 'pop', 0], [30.5, 'blip', 1], [30.9, 'blip', 2], [31.4, 'whoosh'], [32.4, 'tap'],
+];
+// music per bar: chord voicing, bass root, layers. Problem in A minor, a bar of near
+// silence under the lost booking, then the drop into C major (I V vi IV).
+const PROBLEM = [[57, 60, 64], [57, 60, 65], [57, 62, 65], [56, 59, 64]], PROBLEM_BASS = [45, 41, 38, 40];
+const SOLVED = [[60, 64, 67], [59, 62, 67], [60, 64, 69], [60, 65, 69]], SOLVED_BASS = [36, 43, 45, 41];
+const LAYERS = [
+  ['padSoft', 'hat8', 'kick4'],
+  ['padSoft', 'hat8', 'kick4'],
+  ['pad', 'hat8', 'kick4', 'clap'],
+  ['padSoft', 'hat8'],                                           // the break: the lost booking, a riser into the drop
+  ['pad', 'kick4', 'clap', 'bass8', 'hat8', 'crash'],            // the drop, on the logo
+  ['pad', 'kick4', 'clap', 'bass8', 'hat16', 'keys'],
+  ['pad', 'kick4', 'clap', 'bass8', 'hat16', 'keys'],
+  ...Array(6).fill(['pad', 'kick4', 'clap', 'bass8', 'hat16', 'keys', 'lead']),
+  ['pad', 'kick4', 'clap', 'bass8', 'hat8', 'pluck'],
+  ['pad', 'kick4', 'clap', 'bass8', 'hat16', 'keys', 'lead'],
+  ['pad', 'kick2', 'bassHalf', 'hat8', 'pluck'],
+  ['pad', 'kick2', 'bassHalf', 'pluck'],
+];
+const chordAt = bar => bar < 4 ? PROBLEM[bar] : bar >= 16 ? SOLVED[0] : SOLVED[(bar - 4) % 4];
+const bassAt = bar => bar < 4 ? PROBLEM_BASS[bar] : bar >= 16 ? SOLVED_BASS[0] : SOLVED_BASS[(bar - 4) % 4];
+
+// ---------- drawing helpers ----------
+let BOIL = 0, PX = 1, LAYOUT = [];
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+function fillRR(x, y, w, h, r, fill, stroke, lw = 1) {
+  rr(x, y, w, h, r);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); }
+}
+function circle(x, y, r, fill, stroke, lw = 1) {
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); }
+}
+function txt(s, x, y, { size = 14, weight = 500, color = C.text, align = 'left', base = 'alphabetic', ls = 0, alpha = 1 } = {}) {
+  ctx.save(); ctx.font = F(weight, size); ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = base;
+  ctx.letterSpacing = ls + 'px'; ctx.globalAlpha *= alpha; ctx.fillText(s, x, y); ctx.restore();
+}
+function tw(s, size, weight, ls = 0) {
+  return memo(`w|${s}|${size}|${weight}|${ls}`, () => {
+    ctx.save(); ctx.font = F(weight, size); ctx.letterSpacing = ls + 'px';
+    const w = ctx.measureText(s).width; ctx.restore(); return w;
+  });
+}
+// word wrap, memoized; returns lines of words with x offsets so text can type on without reflowing
+function wrap(text, size, weight, width, ls = 0) {
+  return memo(`wrap|${text}|${size}|${weight}|${width}|${ls}`, () => {
+    const space = tw(' ', size, weight, ls), lines = [[]]; let x = 0, i = 0;
+    for (const word of text.split(' ')) {
+      const w = tw(word, size, weight, ls);
+      if (x > 0 && x + w > width) { lines.push([]); x = 0; }
+      lines[lines.length - 1].push({ word, x, w, i: i++ }); x += w + space;
+    }
+    return lines;
+  });
+}
+// the app's own icons (index.html <symbol>s), stroked on a 24-unit grid
+const ICONS = {
+  phone: 'm8 3 3 5-3 3c1.3 2.3 2.7 3.7 5 5l3-3 5 3-1 4c-1 3-9-1-12-4S1 5 4 4Z',
+  mic: 'M12 3a3 3 0 0 1 3 3v5a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3ZM5 11a7 7 0 0 0 14 0M12 18v3m-3 0h6',
+  arrow: 'M5 12h14m-6-6 6 6-6 6',
+  check: 'm5 12 4 4L19 6',
+  calendar: 'M6 5h12a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3ZM7 3v5m10-5v5M3 11h18m-13 5h3',
+  menu: 'M4 4h6a3 3 0 0 1 3 3v14a4 4 0 0 0-4-2H4Zm16 0h-4a3 3 0 0 0-3 3v14a4 4 0 0 1 4-2h3Z',
+  info: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM12 11v6m0-10v1',
+  volume: 'm11 4-6 5H2v6h3l6 5Zm4 4a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14',
+  wave: 'M4 10v4m4-8v12m4-15v18m4-15v12m4-8v4',
+  download: 'M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5',
+  chevron: 'm7 10 5 5 5-5',
+  hook: 'M7 4v7a4 4 0 0 0 4 4h8m-4-4 4 4-4 4',
+  diag: 'M7 17 17 7M9 7h8v8',
+};
+const PATHS = Object.fromEntries(Object.entries(ICONS).map(([k, d]) => [k, new Path2D(d)]));
+function icon(name, x, y, size, color, lw = 1.5, rot = 0) {
+  ctx.save(); ctx.translate(x, y); if (rot) ctx.rotate(rot); ctx.scale(size / 24, size / 24); ctx.translate(-12, -12);
+  ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.stroke(PATHS[name]); ctx.restore();
+}
+function glow(x, y, r, rgb, a) {
+  if (a <= 0) return;
+  ctx.save(); const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, `rgba(${rgb},${a})`); g.addColorStop(1, `rgba(${rgb},0)`);
+  ctx.fillStyle = g; ctx.fillRect(x - r, y - r, 2 * r, 2 * r); ctx.restore();
+}
+// claim what must not collide (checked by render.mjs --check); boxes are stored in screen space
+function claim(id, kind, x, y, w, h) {
+  const m = ctx.getTransform(), P = [[x, y], [x + w, y], [x, y + h], [x + w, y + h]].map(([a, c]) => [m.a * a + m.c * c + m.e, m.b * a + m.d * c + m.f]);
+  const xs = P.map(p => p[0]), ys = P.map(p => p[1]);
+  LAYOUT.push({ id, kind, x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) });
+}
+
+// ---------- hand-drawn marks (the creator scribbling on their screen recording) ----------
+function jit(x, y, seed, amp) {
+  const s = seed * 13.37, sx = x / PX, sy = y / PX;
+  return [
+    x + ((vnoise(sx * .012 + s, sy * .012) - .5) * 2 * amp + (vnoise(sx * .09 + s, sy * .09 + 7) - .5) * amp * .6),
+    y + ((vnoise(sx * .012, sy * .012 + s + 50) - .5) * 2 * amp + (vnoise(sx * .09 + 3, sy * .09 + s) - .5) * amp * .6),
+  ];
+}
+function tracePath(pts) {
+  ctx.beginPath();
+  if (pts.length < 3) { ctx.moveTo(...pts[0]); pts.slice(1).forEach(p => ctx.lineTo(...p)); return; }
+  ctx.moveTo(...pts[0]);
+  for (let i = 1; i < pts.length - 1; i++) ctx.quadraticCurveTo(pts[i][0], pts[i][1], (pts[i][0] + pts[i + 1][0]) / 2, (pts[i][1] + pts[i + 1][1]) / 2);
+  ctx.lineTo(...pts[pts.length - 1]);
+}
+function ink(pts, { w = 7, col = C.lime, amp = 2.2, seed = 0, alpha = 1 } = {}) {
+  if (pts.length < 2) return;
+  ctx.save(); ctx.lineCap = ctx.lineJoin = 'round';
+  for (let p = 0; p < 2; p++) {
+    ctx.globalAlpha = alpha * (p ? .4 : 1); ctx.strokeStyle = col; ctx.lineWidth = w * PX * (p ? .5 : 1);
+    tracePath(pts.map(([x, y]) => jit(x, y, BOIL + seed + p * .41, amp * PX * (p ? 1.5 : 1))));
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawOn(pts, p, o) { if (p > 0) ink(pts.slice(0, Math.max(2, Math.round(pts.length * clamp(p)))), o); }
+function scribbleEllipse(cx, cy, rx, ry, seed = 1) {
+  const pts = [], n = 96, a0 = -2.5 + hash2(seed, 3) * .4;
+  for (let i = 0; i <= n; i++) { const u = i / n, a = a0 + u * Math.PI * 2.24, k = 1 + (u - .5) * .09; pts.push([cx + Math.cos(a) * rx * k, cy + Math.sin(a) * ry * k]); }
+  return pts;
+}
+function scribbleLine(x0, y0, x1, y1, bow = 0, n = 30) {
+  const nx = -(y1 - y0), ny = x1 - x0, pts = [];
+  for (let i = 0; i <= n; i++) { const u = i / n, k = Math.sin(u * Math.PI) * bow; pts.push([lerp(x0, x1, u) + nx * k, lerp(y0, y1, u) + ny * k]); }
+  return pts;
+}
+function scribbleArrow(x0, y0, x1, y1, p, o = {}) {
+  const shaft = scribbleLine(x0, y0, x1, y1, o.bow ?? .18);
+  drawOn(shaft, p / .7, o);
+  const hp = prog(p, .7, 1); if (hp <= 0) return;
+  const [ax, ay] = shaft[shaft.length - 2], a = Math.atan2(y1 - ay, x1 - ax), L = Math.min(46, Math.hypot(x1 - x0, y1 - y0) * .3) * (o.head || 1);
+  for (const s of [-1, 1]) drawOn([[x1, y1], [x1 - Math.cos(a + s * .5) * L, y1 - Math.sin(a + s * .5) * L]], hp, { ...o, seed: (o.seed || 0) + s });
+}
+
+// ---------- the voice orb (a port of static/js/visualizer.js, driven by time instead of audio) ----------
+const RINGS = 17, POINTS = 100, DOTS = 64;
+function orb(x, y, scale, t, phase, level, { alpha = 1, widen = 1 } = {}) {
+  const time = t / 1.7, hearing = phase === 'hearing', speaking = phase === 'speaking';
+  const thinking = ['thinking', 'working', 'connecting'].includes(phase);
+  const hue = hearing ? 166 : 83, sat = speaking ? 51 : 32, energy = level * 19, band = Math.round(level * 20);
+  ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale); ctx.rotate(time * (thinking ? .12 : .025));
+  for (let ring = 0; ring < RINGS; ring++) {
+    const radius = 57 + ring * 3.05, spread = .4 + ring / 24, p3 = time + ring * .19, p7 = ring * .14 - time * 1.7;
+    const swing = 6 + energy, ripple = 1.7 + energy * .25, drift = time * .6;
+    ctx.beginPath();
+    for (let i = 0; i <= POINTS; i++) {
+      const a = i / POINTS * Math.PI * 2;
+      const wave = Math.sin(a * 3 + p3) * Math.cos(a * 2 - drift) * swing + Math.sin(a * 7 + p7) * ripple;
+      const r = radius + wave * spread;
+      i ? ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r * .95) : ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r * .95);
+    }
+    ctx.closePath();
+    const a = (.1 + Math.sin(ring / RINGS * Math.PI) * .36 + band / 20 * .14) * alpha;
+    ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${65 + ring}%, ${Math.min(1, a)})`;
+    ctx.lineWidth = (ring % 4 === 0 ? 1.15 : .65) * widen; ctx.stroke();
+  }
+  ctx.rotate(time * .015);
+  for (let d = 0; d < DOTS; d++) {
+    const ang = d * 2.39996, r = 105 + Math.sin(d * 4.9) * 14 + Math.sin(time + d) * 2;
+    ctx.fillStyle = `hsla(${hue},40%,75%,${(.12 + (Math.sin(d + time) + 1) * .13) * alpha})`;
+    ctx.beginPath(); ctx.arc(Math.cos(ang) * r, Math.sin(ang) * r, (d % 5 === 0 ? 1 : .55) * widen, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+}
+// how loud the orb is: the host's voice while speaking, the guest's while hearing
+function levelAt(t, phase) {
+  if (phase === 'speaking') return .22 + .3 * Math.pow(Math.sin(t * 9.1), 2) * vnoise(t * 5, 2) + .12 * vnoise(t * 11, 9);
+  if (phase === 'hearing') return .12 + .25 * vnoise(t * 7, 4);
+  return 0;
+}
+
+// ---------- the brand mark: four slanted lime bars, then "tableline." ----------
+function logo(x, y, s, t0, t, { period = true, alpha = 1 } = {}) {
+  // (x, y) is the left edge of the mark at the text's vertical centre; s scales CSS pixels
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); ctx.globalAlpha *= alpha;
+  const heights = [15, 25, 20, 11];
+  heights.forEach((h, i) => {
+    const p = t0 === null ? 1 : back(prog(t, t0 + i * .1, t0 + i * .1 + .22));
+    if (p <= 0) return;
+    ctx.save(); ctx.translate(2 + i * 7, 0); ctx.rotate(15 * Math.PI / 180); ctx.scale(1, p);
+    fillRR(-2, -h / 2, 4, h, 2, C.lime); ctx.restore();
+  });
+  const word = 'tableline', n = t0 === null ? word.length : Math.floor(prog(t, t0 + .35, t0 + .85) * word.length + .001);
+  ctx.font = F(800, 25); ctx.letterSpacing = '-1.5px'; ctx.textBaseline = 'middle'; ctx.fillStyle = C.text;
+  let tx = 37;
+  for (let i = 0; i < n; i++) { ctx.fillText(word[i], tx, 1); tx += ctx.measureText(word[i]).width; }
+  const pp = t0 === null ? 1 : back(prog(t, t0 + 1.0, t0 + 1.2));
+  if (period && pp > 0 && n === word.length) {
+    ctx.save(); ctx.translate(tx - .5, 1); ctx.scale(pp, pp); ctx.fillStyle = C.lime; ctx.fillText('.', 0, 0); ctx.restore();
+  }
+  ctx.restore();
+}
+const LOGO_W = () => 37 + tw('tableline', 25, 800, -1.5) + tw('.', 25, 800, -1.5);
+
+// ---------- the phone ----------
+// Local coordinates: body 660 x 1400 centred on the origin; the screen is 628 x 1368.
+const SCR = { x: -314, y: -684, w: 628, h: 1368 }, TOPBAR = 96, S = SCR.w / 390;
+function device(screenFn, { shadow = true } = {}) {
+  if (shadow) {
+    ctx.save(); ctx.translate(40, 70); ctx.scale(1, 1.02);
+    const g = ctx.createRadialGradient(0, 0, 200, 0, 0, 900); g.addColorStop(0, 'rgba(0,0,0,.55)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.fillRect(-900, -900, 1800, 1800); ctx.restore();
+  }
+  const g = ctx.createLinearGradient(-330, -700, 330, 700);
+  g.addColorStop(0, '#343940'); g.addColorStop(.45, '#17191c'); g.addColorStop(1, '#2a2e33');
+  fillRR(-330, -700, 660, 1400, 104, g, '#50575f', 3);
+  fillRR(-322, -692, 644, 1384, 97, null, 'rgba(255,255,255,.07)', 2);
+  for (const [x, y, h] of [[-336, -440, 70], [-336, -330, 120], [-336, -180, 120], [328, -300, 180]]) fillRR(x, y, 8, h, 4, '#2d3238');
+  ctx.save(); rr(SCR.x, SCR.y, SCR.w, SCR.h, 88); ctx.fillStyle = '#000'; ctx.fill(); ctx.clip();
+  ctx.translate(SCR.x, SCR.y); screenFn(); ctx.restore();
+  fillRR(-95, -662, 190, 56, 28, '#000');
+  ctx.save(); rr(SCR.x, SCR.y, SCR.w, SCR.h, 88); ctx.clip();
+  const gl = ctx.createLinearGradient(-314, -684, 200, 300); gl.addColorStop(0, 'rgba(255,255,255,.07)'); gl.addColorStop(.5, 'rgba(255,255,255,0)');
+  ctx.fillStyle = gl; ctx.fillRect(SCR.x, SCR.y, SCR.w, SCR.h); ctx.restore();
+}
+function statusBar(time, color = C.text) {
+  txt(time, 78, 62, { size: 30, weight: 600, color });
+  ctx.fillStyle = color;
+  for (let i = 0; i < 4; i++) fillRR(452 + i * 11, 58 - 8 - i * 5, 7, 8 + i * 5, 2, color);
+  ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = 3.4; ctx.lineCap = 'round';
+  for (const r of [7, 14]) { ctx.beginPath(); ctx.arc(514, 60, r, -Math.PI * .78, -Math.PI * .22); ctx.stroke(); }
+  ctx.restore(); circle(514, 58, 2.6, color);
+  fillRR(536, 40, 44, 22, 7, null, color, 2.2); fillRR(540, 44, 30, 14, 4, color); fillRR(582, 47, 3, 8, 1.5, color);
+}
+
+// the restaurant's phone: an incoming call, then missed calls stacking up on the lock screen
+function wallpaper() {
+  const g = ctx.createLinearGradient(0, 0, 0, SCR.h); g.addColorStop(0, '#2b1a12'); g.addColorStop(.55, '#140d0a'); g.addColorStop(1, '#070506');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, SCR.w, SCR.h);
+  glow(120, 300, 520, '208,138,85', .22); glow(560, 980, 460, '255,121,107', .1);
+}
+function incomingScreen(t) {
+  wallpaper();
+  statusBar('20:02');
+  txt('Unknown number', SCR.w / 2, 260, { size: 58, weight: 600, align: 'center' });
+  txt('mobile · incoming call', SCR.w / 2, 318, { size: 28, weight: 500, color: 'rgba(245,247,250,.62)', align: 'center' });
+  claim('caller', 'keep', 60, 200, SCR.w - 120, 140);
+  for (let i = 0; i < 3; i++) {
+    const p = ((t * .9 + i / 3) % 1);
+    circle(SCR.w / 2, 650, 120 + p * 170, null, `rgba(255,255,255,${.18 * (1 - p)})`, 3);
+  }
+  circle(SCR.w / 2, 650, 118, 'rgba(255,255,255,.1)', 'rgba(255,255,255,.25)', 2);
+  icon('phone', SCR.w / 2, 650, 96, C.text, 1.6);
+  const pulse = .5 + .5 * Math.sin(t * 8);
+  circle(150, 1150, 70, '#ff3b30'); icon('phone', 150, 1150, 56, '#fff', 2, Math.PI * .75);
+  circle(478, 1150, 70 + pulse * 5, '#34c759'); icon('phone', 478, 1150, 56, '#fff', 2);
+  txt('Decline', 150, 1262, { size: 28, weight: 500, align: 'center', color: 'rgba(245,247,250,.8)' });
+  txt('Accept', 478, 1262, { size: 28, weight: 500, align: 'center', color: 'rgba(245,247,250,.8)' });
+}
+function missedCount(t) { return t < 2 ? 3 : 3 + Math.min(4, 1 + Math.floor((t - 2) / .5)); }
+function lockScreen(t, { dim = 0 } = {}) {
+  wallpaper();
+  statusBar('20:04');
+  txt('Saturday 26 September', SCR.w / 2, 206, { size: 30, weight: 600, color: 'rgba(245,247,250,.85)', align: 'center' });
+  txt('20:04', SCR.w / 2, 372, { size: 172, weight: 600, align: 'center', ls: -4 });
+  const count = missedCount(t);
+  txt(`${count} missed calls`, 60, 470, { size: 32, weight: 800, color: C.coral });
+  txt('Phone', 568, 470, { size: 28, weight: 600, color: 'rgba(245,247,250,.55)', align: 'right' });
+  claim('missed-count', 'keep', 60, 440, 508, 40);
+  const arrivals = [2, 2.5, 3, 3.5].filter(a => t >= a);
+  const n = arrivals.length + 1;   // one was already waiting
+  for (let i = n - 1; i >= 0; i--) {
+    // the newest card slides in at the top and pushes the rest down
+    const newest = arrivals[arrivals.length - 1] ?? -9, slide = easeOut(prog(t, newest, newest + .22));
+    const slot = i === 0 && arrivals.length ? 0 : i - (arrivals.length ? 1 - slide : 0);
+    const y = 506 + slot * 150 - (i === 0 && arrivals.length ? (1 - slide) * 120 : 0);
+    const a = i === 0 && arrivals.length ? slide : 1;
+    if (y > 1150) continue;
+    ctx.save(); ctx.globalAlpha = a * (1 - dim);
+    fillRR(36, y, 556, 132, 36, 'rgba(46,40,38,.82)', 'rgba(255,255,255,.08)', 2);
+    fillRR(62, y + 28, 76, 76, 20, '#34c759'); icon('phone', 100, y + 66, 44, '#fff', 2.2);
+    txt('Phone', 162, y + 56, { size: 28, weight: 700 });
+    txt(i === 0 ? 'now' : `${i * 2}m ago`, 566, y + 56, { size: 24, weight: 500, color: 'rgba(245,247,250,.55)', align: 'right' });
+    txt('Missed call · Unknown number', 162, y + 98, { size: 27, weight: 500, color: 'rgba(245,247,250,.78)' });
+    ctx.restore();
+    if (slot < 1.2) claim('missed-' + i, 'keep', 36, y, 556, 132);
+  }
+}
+function darkScreen() {
+  ctx.fillStyle = '#050607'; ctx.fillRect(0, 0, SCR.w, SCR.h);
+  const g = ctx.createLinearGradient(0, 0, SCR.w, SCR.h); g.addColorStop(0, 'rgba(255,255,255,.035)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, SCR.w, SCR.h);
+}
+
+// ---------- the Tableline app, redrawn from static/index.html + styles.css (mobile, live mode) ----------
+// Page coordinates are CSS pixels on a 390-wide viewport; `scroll` is the page's scroll offset.
+const PG = { cardX: 14, cardY: 276, cardW: 362, cardB: 1634, split: 952, orbY: 522, capY: 640, titleY: 677, statusY: 705,
+  ctrlY: 762, voiceY: 812, micY: 840, metrics: 862, areaTop: 1016, areaBot: 1384, outcome: 1400, footer: 1592 };
+const TX = { avatar: 35, col: 72, right: 355 };
+// page point -> the phone's local coordinates (and world, for the studio phone at the origin)
+const pageX = x => SCR.x + x * S;
+const pageY = (y, scroll) => SCR.y + TOPBAR + (y - scroll) * S;
+function scrollAt(t) {
+  const keys = [[10.0, 0], [10.7, 330], [12.8, 330], [13.2, 612], [20.0, 612], [20.4, 912], [24.0, 912], [24.3, 572], [24.6, 572], [24.95, 612]];
+  if (t <= keys[0][0]) return keys[0][1];
+  for (let i = 1; i < keys.length; i++) if (t <= keys[i][0]) return lerp(keys[i - 1][1], keys[i][1], ease(prog(t, keys[i - 1][0], keys[i][0])));
+  return keys[keys.length - 1][1];
+}
+function callState(t) {
+  const phase = phaseAt(t), active = t >= 11.0, ready = t >= CALL_START;
+  return {
+    phase, active, ready,
+    pill: !active ? 'Ready for a call' : ready ? 'Connected' : 'Connecting',
+    button: !active ? 'Start conversation' : ready ? 'End conversation' : 'Cancel connection',
+    mic: active && ready ? 'Microphone active' : 'Microphone on only during a call',
+    duration: ready ? Math.floor(t - CALL_START) : 0,
+    turns: TURNS.filter(x => x.who === 'you' && t >= x.at).length,
+  };
+}
+// the transcript: every item reserves its final height as it arrives, so text types in place
+function itemBox(it) {
+  return memo('item|' + it.at, () => {
+    if (it.act) {
+      const lines = wrap(it.result, 11, 500, TX.right - TX.col - 22);
+      return { h: 10 + 15 + 5 + lines.length * 18.5 + 10, gap: 16, lines };
+    }
+    const lines = wrap(it.text, 14, 500, TX.right - TX.col);
+    return { h: 22 + lines.length * 24, gap: 17, lines };
+  });
+}
+function transcriptLayout(t) {
+  const items = []; let y = 0;
+  for (const it of TURNS) {
+    if (t < it.at) break;
+    const box = itemBox(it), grow = easeOut(prog(t, it.at, it.at + .24));
+    items.push({ it, box, y, grow });
+    y += (box.h + box.gap) * grow;
+  }
+  const view = PG.areaBot - PG.areaTop - 26;
+  return { items, offset: Math.max(0, y - view), height: y, view };
+}
+// where a transcript item sits on the page right now (for annotations and claims)
+function itemRect(t, at) {
+  const L = transcriptLayout(t), e = L.items.find(i => i.it.at === at);
+  if (!e) return null;
+  const x = e.it.act ? TX.col : TX.avatar;
+  return { x, y: PG.areaTop + 16 + e.y - L.offset, w: TX.right - x, h: e.box.h, box: e.box };
+}
+function appPage(t, scroll) {
+  const st = callState(t);
+  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, SCR.w, SCR.h);
+  ctx.save(); ctx.beginPath(); ctx.rect(0, TOPBAR, SCR.w, SCR.h - TOPBAR); ctx.clip();
+  ctx.translate(0, TOPBAR); ctx.scale(S, S); ctx.translate(0, -scroll);
+  const g = ctx.createRadialGradient(195, scroll - 200, 0, 195, scroll - 200, 520); g.addColorStop(0, 'rgba(37,42,48,.16)'); g.addColorStop(1, 'rgba(37,42,48,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, scroll - 20, 390, 900);
+  // header
+  if (t >= 10.0) logo(16, 34, 1, null, t);
+  txt('Demo guide', 344, 38, { size: 12.5, weight: 500, color: C.muted, align: 'right' });
+  icon('diag', 356, 34, 12, C.muted, 1.8);
+  ctx.fillStyle = C.line; ctx.fillRect(0, 68, 390, 1);
+  // intro
+  ctx.fillStyle = C.lime; ctx.fillRect(16, 99, 16, 1.4);
+  txt('YOUR NEXT GREAT HOST IS ALWAYS HERE', 42, 103, { size: 9.5, weight: 700, color: '#aeb5bd', ls: 1.7 });
+  txt('Busy tables.', 16, 150, { size: 30, weight: 600, ls: -1.3 });
+  txt('Never a missed welcome.', 16, 187, { size: 30, weight: 600, color: '#aab1bb', ls: -1.3 });
+  txt('Let your team take care of the room. Your AI host takes', 16, 224, { size: 13, weight: 500, color: C.muted });
+  txt('care of the call.', 16, 246, { size: 13, weight: 500, color: C.muted });
+  // the workspace card: call panel over conversation panel
+  ctx.save(); rr(PG.cardX, PG.cardY, PG.cardW, PG.cardB - PG.cardY, 22); ctx.clip();
+  const cp = ctx.createLinearGradient(14, 276, 376, 940); cp.addColorStop(0, '#131619'); cp.addColorStop(.78, '#0d0f11');
+  ctx.fillStyle = cp; ctx.fillRect(14, 276, 362, PG.split - 276);
+  glow(180, 520, 260, '48,56,65', .32);
+  ctx.fillStyle = '#0d0f11'; ctx.fillRect(14, PG.split, 362, PG.cardB - PG.split);
+  callPanel(t, st);
+  conversationPanel(t, st);
+  ctx.restore();
+  fillRR(PG.cardX + .5, PG.cardY + .5, PG.cardW - 1, PG.cardB - PG.cardY - 1, 22, null, C.line, 1);
+  ctx.fillStyle = C.line; ctx.fillRect(14, PG.split, 362, 1);
+  ctx.restore();
+  // browser status bar over the page
+  const sb = ctx.createLinearGradient(0, 0, 0, TOPBAR); sb.addColorStop(0, 'rgba(8,9,11,1)'); sb.addColorStop(1, 'rgba(8,9,11,.92)');
+  ctx.fillStyle = sb; ctx.fillRect(0, 0, SCR.w, TOPBAR);
+  statusBar('20:14');
+}
+function callPanel(t, st) {
+  // panel top
+  fillRR(34, 292, 37, 37, 10, C.raised, '#414852', 1);
+  txt('CK', 52.5, 315, { size: 13, weight: 500, color: '#e6e9ec', align: 'center', ls: .5 });
+  txt('YOU’RE CALLING', 81, 305, { size: 9.5, weight: 600, color: C.muted, ls: 1.4 });
+  txt('The Copper Kettle', 81, 324, { size: 14, weight: 600 });
+  const pw = tw(st.pill, 11, 500) + 30;
+  fillRR(356 - pw, 299, pw, 25, 6, '#181b1f', '#30363d', 1);
+  const blink = st.active && !st.ready ? .4 + .6 * Math.abs(Math.sin(t * 9)) : 1;
+  circle(356 - pw + 12, 311.5, 3, `rgba(200,243,106,${blink})`);
+  txt(st.pill, 356 - pw + 21, 315.5, { size: 11, weight: 500, color: '#d8e9bc' });
+  // mode switch: live pressed
+  const l1 = tw('Live conversation', 12, 500), l2 = tw('Interactive demo', 12, 500) + tw('NO MIC', 8.5, 600, .4) + 14;
+  const mw = l1 + l2 + 30 * 2 + 3 + 8, mx = 195 - mw / 2;
+  fillRR(mx, 360, mw, 38, 9, '#0c0e10', C.line, 1);
+  fillRR(mx + 4, 364, l1 + 30, 30, 5, '#252a30');
+  txt('Live conversation', mx + 19, 383.5, { size: 12, weight: 500, color: '#f4f7f0' });
+  const x2 = mx + 4 + l1 + 30 + 3 + 15;
+  txt('Interactive demo', x2, 383.5, { size: 12, weight: 500, color: C.muted });
+  const tagX = x2 + tw('Interactive demo', 12, 500) + 5;
+  fillRR(tagX, 373, tw('NO MIC', 8.5, 600, .4) + 8, 14, 3, '#30382a');
+  txt('NO MIC', tagX + 4, 383, { size: 8.5, weight: 600, color: '#e0ebcd', ls: .4 });
+  // orb
+  const lvl = levelAt(t, st.phase);
+  glow(195, PG.orbY, 150, '186,212,135', .06);
+  orb(195, PG.orbY, 1, t, st.phase, lvl);
+  const core = ctx.createRadialGradient(182, PG.orbY - 20, 2, 195, PG.orbY, 44);
+  core.addColorStop(0, 'rgba(70,81,89,.8)'); core.addColorStop(.66, 'rgba(18,21,24,.95)');
+  circle(195, PG.orbY, 39, core, 'rgba(165,190,115,.3)', 1);
+  icon('wave', 195, PG.orbY, 30, '#e4f6c2', 1.3);
+  // caption under the orb
+  const nameW = tw('Meet your AI host', 12, 500), aw = tw('AI', 9, 600) + 8;
+  const nx = 195 - (nameW + 5 + aw) / 2;
+  txt('Meet your AI host', nx, PG.capY, { size: 12, weight: 500, color: '#b7bec7' });
+  fillRR(nx + nameW + 5, PG.capY - 11, aw, 14, 3, null, '#4d5942', 1);
+  txt('AI', nx + nameW + 9, PG.capY - .5, { size: 9, weight: 600, color: '#d9eac3' });
+  const [title, hint] = PHASE_COPY[st.phase];
+  txt(title, 195, PG.titleY, { size: 20, weight: 600, align: 'center', ls: -.4 });
+  txt(hint, 195, PG.statusY, { size: 12, weight: 500, color: C.muted, align: 'center' });
+  // controls
+  const press = st.active && t < 11.12 ? .97 : 1;
+  for (const [x, name] of [[52, 'mic'], [338, 'volume']]) {
+    circle(x, PG.ctrlY, 21.5, '#181b1f', '#343a42', 1);
+    icon(name, x, PG.ctrlY, 17, st.active || name === 'volume' ? '#c7cdd4' : 'rgba(199,205,212,.4)', 1.5);
+  }
+  ctx.save(); ctx.translate(195, PG.ctrlY); ctx.scale(press, press);
+  const live = st.active && st.ready, connecting = st.active && !st.ready;
+  const bf = live ? '#ff796b' : connecting ? '#352224' : C.lime, bs = live ? '#ff958a' : connecting ? '#7b4444' : '#d8eca4';
+  const bc = live ? '#240c0a' : connecting ? '#ffd9d4' : C.limeInk;
+  if (live) glow(0, 0, 150, '255,111,97', .12);
+  fillRR(-115, -24, 230, 48, 24, bf, bs, 1);
+  const lw = tw(st.button, 13, 800), gx = -(15 + 10 + lw) / 2;
+  icon('phone', gx + 7.5, 0, 15, bc, 1.7, st.active ? Math.PI * .75 : 0);
+  txt(st.button, gx + 25, 4.5, { size: 13, weight: 800, color: bc });
+  ctx.restore();
+  // voice row; on a phone the microphone note wraps onto its own line
+  const vl = tw('Host voice', 11, 500), vs = tw('Arjun · Hindi / English', 11, 500) + 30;
+  const vx = 195 - (vl + 7 + vs) / 2;
+  txt('Host voice', vx, PG.voiceY + 4, { size: 11, weight: 500, color: C.muted });
+  fillRR(vx + vl + 7, PG.voiceY - 11, vs, 22, 4, '#181b1f');
+  txt('Arjun · Hindi / English', vx + vl + 13, PG.voiceY + 4, { size: 11, weight: 500, color: '#d7dce2' });
+  icon('chevron', vx + vl + 7 + vs - 11, PG.voiceY, 12, '#d7dce2', 2);
+  txt(st.mic, 195, PG.micY, { size: 11, weight: 500, color: C.muted, align: 'center' });
+  // metrics
+  ctx.fillStyle = C.line; ctx.fillRect(34, PG.metrics, 322, 1); ctx.fillRect(141, PG.metrics + 16, 1, 50); ctx.fillRect(249, PG.metrics + 16, 1, 50);
+  const mm = String(Math.floor(st.duration / 60)).padStart(2, '0') + ':' + String(st.duration % 60).padStart(2, '0');
+  [['CALL DURATION', mm], ['REPLY WAIT', '—'], ['YOUR TURNS', String(st.turns).padStart(2, '0')]].forEach(([label, value], i) => {
+    const cx = 88 + i * 107.5;
+    txt(label, cx - (i === 1 ? 7 : 0), PG.metrics + 30, { size: 8.5, weight: 600, color: C.muted, ls: 1.2, align: 'center' });
+    if (i === 1) icon('info', cx + tw(label, 8.5, 600, 1.2) / 2 - 1, PG.metrics + 27, 10, C.muted, 1.8);
+    txt(value, cx - (i === 1 ? 8 : 0), PG.metrics + 58, { size: 19, weight: 500, align: 'center' });
+    if (i === 1) txt('ms', cx + 8, PG.metrics + 58, { size: 11, weight: 500, color: C.muted });
+  });
+}
+function conversationPanel(t, st) {
+  txt('Conversation', 35, PG.areaTop - 21, { size: 15, weight: 600, ls: -.3 });
+  const tagW = tw('LIVE TRANSCRIPT', 8.5, 600, 1.2) + 12;
+  fillRR(355 - tagW, PG.areaTop - 34, tagW, 18, 4, null, C.lineStrong, 1);
+  txt('LIVE TRANSCRIPT', 355 - tagW + 6, PG.areaTop - 21.5, { size: 8.5, weight: 600, color: C.muted, ls: 1.2 });
+  ctx.fillStyle = C.line; ctx.fillRect(14, PG.areaTop, 362, 1);
+  // transcript area
+  ctx.save(); ctx.beginPath(); ctx.rect(14, PG.areaTop + 1, 362, PG.areaBot - PG.areaTop - 1); ctx.clip();
+  const L = transcriptLayout(t);
+  if (!L.items.length) {
+    icon('wave', 195, PG.areaTop + 106, 22, 'rgba(155,163,173,.8)', 1.4);
+    txt('Every word, right here.', 195, PG.areaTop + 156, { size: 15, weight: 600, align: 'center' });
+    txt('Your conversation appears as you speak.', 195, PG.areaTop + 182, { size: 12, weight: 500, color: C.muted, align: 'center' });
+  }
+  for (const { it, box, y, grow } of L.items) {
+    const top = PG.areaTop + 16 + y - L.offset;
+    if (top > PG.areaBot || top + box.h < PG.areaTop) continue;
+    ctx.save(); ctx.globalAlpha = grow; ctx.translate(0, (1 - grow) * 8);
+    if (it.act) drawAction(t, it, box, top); else drawTurn(t, it, box, top);
+    ctx.restore();
+  }
+  ctx.restore();
+  // outcome
+  const confirmed = t >= RECEIPT_AT, rp = easeOut(prog(t, RECEIPT_AT, RECEIPT_AT + .25));
+  ctx.fillStyle = C.line; ctx.fillRect(36, PG.outcome, 318, 1);
+  if (confirmed) glow(45, PG.outcome + 30, 60, '200,243,106', .25 * rp);
+  icon('calendar', 45, PG.outcome + 29, 18, confirmed ? C.lime : '#a7bb8d', 1.5);
+  txt('FROM CONVERSATION TO CONFIRMATION', 66, PG.outcome + 28, { size: 8.5, weight: 600, color: C.muted, ls: 1.1 });
+  txt(confirmed ? 'Reservation confirmed.' : 'A table. A time. All taken care of.', 66, PG.outcome + 49, { size: 13, weight: 600 });
+  txt(confirmed ? 'Confirmed by the restaurant tool. Keep your reference.' : 'Reservation details appear here when confirmed.', 66, PG.outcome + 68, { size: 10.5, weight: 500, color: '#9da5ae' });
+  if (confirmed) {
+    const y0 = PG.outcome + 80;
+    ctx.save(); ctx.globalAlpha = rp; ctx.translate(0, (1 - rp) * 10);
+    fillRR(66, y0, 290, 94, 8, '#171d15', '#475c37', 1);
+    RECEIPT.forEach(([label, value], i) => {
+      const x = 78 + (i % 2) * 142, y = y0 + 18 + Math.floor(i / 2) * 42;
+      txt(label, x, y, { size: 8.5, weight: 600, color: C.muted, ls: 1 });
+      txt(value, x, y + 18, { size: 12, weight: 600 });
+    });
+    ctx.restore();
+  }
+  // footer
+  ctx.fillStyle = '#0b0d0f'; ctx.fillRect(14, PG.footer, 362, PG.cardB - PG.footer);
+  ctx.fillStyle = C.line; ctx.fillRect(14, PG.footer, 362, 1);
+  txt('This app keeps transcripts in this tab', 36, PG.footer + 25, { size: 10, weight: 500, color: '#9199a2' });
+  icon('download', 290, PG.footer + 21, 12, st.active ? '#c7cdd4' : 'rgba(199,205,212,.4)', 1.8);
+  txt('Export call', 300, PG.footer + 25, { size: 11, weight: 500, color: st.active ? '#c7cdd4' : 'rgba(199,205,212,.4)' });
+}
+function drawTurn(t, it, box, top) {
+  const ai = it.who === 'ai';
+  fillRR(TX.avatar, top + 2, 26, 26, 8, ai ? '#293124' : '#22272d', ai ? '#46543a' : '#3e4852', 1);
+  txt(ai ? 'AI' : 'YOU', TX.avatar + 13, top + 19, { size: ai ? 10 : 8.5, weight: 600, color: ai ? '#d7e8bf' : '#c5d5df', align: 'center' });
+  txt(ai ? 'AI host' : 'You', TX.col, top + 13, { size: 11, weight: 700, color: ai ? '#d5e5be' : '#c1d2d3' });
+  const secs = Math.max(0, Math.floor(it.at - CALL_START));
+  txt('00:' + String(secs).padStart(2, '0'), TX.right, top + 13, { size: 9, weight: 500, color: '#89919b', align: 'right' });
+  const words = box.lines.flat().length, p = prog(t, it.at, it.at + it.dur), shown = Math.ceil(words * p - 1e-6);
+  const settled = p >= 1;
+  box.lines.forEach((line, li) => line.forEach(w => {
+    if (w.i >= shown) return;
+    // live transcription: the guest's latest words stay provisional until the turn settles
+    const partial = !ai && !settled && w.i >= shown - 2;
+    const color = it.cut && settled ? '#89919b' : partial ? C.muted : '#d5dae0';
+    txt(w.word, TX.col + w.x, top + 36 + li * 24, { size: 14, weight: 500, color });
+  }));
+}
+function drawAction(t, it, box, top) {
+  const done = t >= it.done;
+  fillRR(TX.col, top, TX.right - TX.col, box.h, 8, '#171c16', '#35402f', 1);
+  const pulse = done ? 1 : .35 + .65 * Math.abs(Math.sin(t * 6));
+  ctx.save(); ctx.globalAlpha *= pulse; icon('check', TX.col + 17, top + 17, 12, '#d0e4b4', 2); ctx.restore();
+  txt(it.act, TX.col + 27, top + 21, { size: 11, weight: 600, color: '#d0e4b4' });
+  if (!done) { txt('In progress…', TX.col + 11, top + 43, { size: 11, weight: 500, color: '#a8b0b8' }); return; }
+  box.lines.forEach((line, li) => txt(line.map(w => w.word).join(' '), TX.col + 11, top + 43 + li * 18.5, { size: 11, weight: 500, color: '#a8b0b8' }));
+}
+
+// ---------- the restaurant: one room, seen from above ----------
+const ROOM = { x0: -500, x1: 500, y0: -860, y1: 860 }, ROOM_C = { x: 0, y: 30 };
+const PHONE = { x: -300, y: 652, rot: -.18, s: .08 };
+const HOST = { x: -300, y: 660, w: 184, h: 104 };
+const TABLES = [
+  [-330, -520, 2], [-80, -520, 4], [170, -520, 2],
+  [-330, -250, 4], [-80, -250, 2], [170, -250, 4],
+  [-330, 20, 2], [-80, 20, 4], [170, 20, 2],
+  [-330, 290, 4], [-80, 290, 4], [170, 290, 2],
+  [60, 540, 2], [230, 540, 2],
+].map(([x, y, n], i) => ({ i, x, y, n }));
+const CLOTHES = ['#4a5460', '#6f5848', '#52614e', '#725968', '#414c59', '#7b684f', '#4e5e70', '#63546d', '#80524a'];
+const HAIR = ['#2b221d', '#3d2d22', '#1d1917', '#6e5441', '#8f9398', '#4c3527', '#251f1c', '#80603f', '#a88b6a'];
+const seats = tb => tb.n === 4
+  ? [[0, -76, 0], [76, 0, 1], [0, 76, 2], [-76, 0, 3]].map(([dx, dy, s]) => ({ x: tb.x + dx, y: tb.y + dy, side: s }))
+  : [[0, -68, 0], [0, 68, 2]].map(([dx, dy, s]) => ({ x: tb.x + dx, y: tb.y + dy, side: s }));
+// the couple the host is seating in S3 (so nobody is at the stand), and the party of four in S15
+const PARTY2 = { table: 13, from: 4.15 }, PARTY4 = { table: 10, from: 27.75 };
+function candleAt(tb, t) { // 1 once a table is occupied; a party's table lights up when they sit
+  const party = tb.i === PARTY4.table ? PARTY4 : tb.i === PARTY2.table ? PARTY2 : null;
+  return party ? back(prog(t, party.from + 1.55, party.from + 1.8)) : 1;
+}
+const SERVERS = [
+  { path: [[-205, -690], [-205, -385], [-205, -115], [-205, 155], [-205, 405], [-205, -115], [-205, -690]], ph: 0 },
+  { path: [[45, -690], [45, -385], [300, -385], [300, -115], [45, -115], [45, 155], [45, -690]], ph: .35 },
+  { path: [[300, -690], [300, 155], [300, 405], [-30, 405], [45, 155], [45, -385], [300, -690]], ph: .7 },
+];
+function along(path, u) {
+  const segs = memo('len|' + path.flat().join(','), () => { const s = []; let L = 0; for (let i = 1; i < path.length; i++) { const d = Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]); s.push([L, d]); L += d; } return { s, L }; });
+  let d = (((u % 1) + 1) % 1) * segs.L;
+  for (let i = 0; i < segs.s.length; i++) {
+    const [L0, len] = segs.s[i];
+    if (d <= L0 + len) { const k = (d - L0) / len; return [lerp(path[i][0], path[i + 1][0], k), lerp(path[i][1], path[i + 1][1], k)]; }
+  }
+  return path[path.length - 1];
+}
+function pathPoint(pts, k) { // k 0..1 along a polyline, by length
+  return along([...pts, pts[pts.length - 1]].slice(0, pts.length), clamp(k) * .9999);
+}
+function floorWorld(t) {
+  const busy = t < 20;
+  // floor, kitchen and the pass
+  ctx.fillStyle = '#16191c'; ctx.fillRect(ROOM.x0, ROOM.y0, 1000, 1720);
+  ctx.fillStyle = '#1b1f23';
+  for (let y = ROOM.y0 + 40, r = 0; y < ROOM.y1; y += 44, r++) {
+    ctx.fillRect(ROOM.x0, y, 1000, 2 * PX);
+    for (let k = 0; k < 4; k++) ctx.fillRect(ROOM.x0 + ((hash2(r, k) * 1000 + k * 250) % 1000), y - 44, 2 * PX, 44);
+  }
+  ctx.fillStyle = '#0f1114'; ctx.fillRect(ROOM.x0, ROOM.y0, 1000, 160);
+  txt('KITCHEN', 0, -780, { size: 20, weight: 700, color: '#5b646e', align: 'center', ls: 8 });
+  fillRR(-330, -712, 660, 26, 6, '#262b31', '#454d56', 2 * PX);
+  for (let i = 0; i < 5; i++) { glow(-240 + i * 120, -699, 58, '255,170,100', busy ? .42 : .28); circle(-240 + i * 120, -699, 8, '#15181b', '#4a525c', 1.5 * PX); }
+  // street windows, the bar with its bottles and stools
+  for (let y = -600; y <= 560; y += 290) fillRR(ROOM.x0 - 4, y, 12, 180, 3, '#26303b');
+  fillRR(392, -600, 90, 880, 12, '#262b31', '#3a414a', 2 * PX);
+  for (let y = -570; y <= 250; y += 34) circle(462, y, 6, ['#5a4032', '#35503a', '#58542f', '#34465a'][Math.floor(hash2(y, 3) * 4)]);
+  for (let y = -560, k = 0; y <= 240; y += 80, k++) {
+    circle(356, y, 15, '#1f2327', '#3a414a', 2 * PX);
+    if (hash2(k, 11) > .35) person(350, y, 0, k + 40, t);
+  }
+  // walls, with the entrance at the bottom
+  ctx.save(); ctx.strokeStyle = '#2a3036'; ctx.lineWidth = 22; ctx.lineJoin = 'round';
+  ctx.beginPath(); ctx.moveTo(-70, ROOM.y1); ctx.lineTo(ROOM.x0, ROOM.y1); ctx.lineTo(ROOM.x0, ROOM.y0); ctx.lineTo(ROOM.x1, ROOM.y0); ctx.lineTo(ROOM.x1, ROOM.y1); ctx.lineTo(70, ROOM.y1); ctx.stroke();
+  ctx.strokeStyle = '#3a414a'; ctx.lineWidth = 2 * PX; ctx.beginPath(); ctx.arc(70, ROOM.y1, 140, Math.PI, Math.PI * 1.5); ctx.stroke(); ctx.restore();
+  // warm light over the tables first, so people sit on top of it
+  for (const tb of TABLES) glow(tb.x, tb.y, 175, '208,138,85', .17 * clamp(candleAt(tb, t)));
+  for (const tb of TABLES) table(tb, t);
+  staff(t);
+  hostStand(t);
+}
+// a person seen from above: shoulders across the way they face, head a little forward
+function person(x, y, ang, seed, t, { staff = false, tray = false } = {}) {
+  const bob = (vnoise(t * 1.3 + seed, seed) - .5) * 2.4;
+  ctx.save(); ctx.translate(x + Math.cos(ang) * bob, y + Math.sin(ang) * bob); ctx.rotate(ang);
+  ctx.beginPath(); ctx.ellipse(-3, 0, 12, 22, 0, 0, Math.PI * 2);
+  ctx.fillStyle = staff ? '#20261a' : CLOTHES[seed % CLOTHES.length]; ctx.fill();
+  ctx.lineWidth = (staff ? 3.4 : 1.5) * PX; ctx.strokeStyle = staff ? C.lime : 'rgba(0,0,0,.4)'; ctx.stroke();
+  circle(4, 0, 11.5, HAIR[(seed * 7 + 3) % HAIR.length], 'rgba(0,0,0,.45)', 1.5 * PX);
+  if (tray) { circle(16, 18, 11, '#2f353c', '#4a525c', 1.5 * PX); circle(16, 18, 4.5, '#c98d5e'); }
+  ctx.restore();
+}
+function table(tb, t) {
+  for (const s of seats(tb)) {
+    const w = s.side % 2 ? 18 : 46, h = s.side % 2 ? 46 : 18;
+    fillRR(s.x - w / 2, s.y - h / 2, w, h, 8, '#1f2327', '#3a414a', 2 * PX);
+  }
+  if (tb.n === 4) fillRR(tb.x - 48, tb.y - 48, 96, 96, 14, '#2a2f35', '#454d56', 2 * PX);
+  else circle(tb.x, tb.y, 42, '#2a2f35', '#454d56', 2 * PX);
+  const c = candleAt(tb, t);
+  if (c <= 0) return;
+  seats(tb).forEach((s, j) => {
+    const px = lerp(tb.x, s.x, .38), py = lerp(tb.y, s.y, .38);
+    circle(px, py, 11 * c, '#15181b', '#4a525c', 1.5 * PX); circle(px, py, 4.5 * c, ['#d0935f', '#a9c46e', '#df8f80'][Math.floor(hash2(tb.i, j) * 3)]);
+    if (tb.i !== PARTY4.table && tb.i !== PARTY2.table) person(s.x, s.y, Math.atan2(tb.y - s.y, tb.x - s.x), tb.i * 7 + j, t);
+  });
+  const flick = .8 + .2 * vnoise(t * 6, tb.i);
+  glow(tb.x, tb.y, 66, '255,190,120', .5 * flick * c); circle(tb.x, tb.y, 3.5 * c, '#ffe2b8');
+  if (tb.i === PARTY4.table) { // a welcome pulse as the party's candle lights
+    const wp = prog(t, PARTY4.from + 1.55, PARTY4.from + 2.25);
+    if (wp > 0 && wp < 1) circle(tb.x, tb.y, 70 + wp * 120, null, `rgba(200,243,106,${.6 * (1 - wp)})`, 3.5 * PX);
+  }
+}
+function staff(t) {
+  const speed = t < 20 ? .12 : .06;
+  for (const [si, sv] of SERVERS.entries()) {
+    const u = t * speed + sv.ph;
+    let [x, y] = along(sv.path, u), [ax, ay] = along(sv.path, u + .004), ang = Math.atan2(ay - y, ax - x), trail = true;
+    if (si === 0 && t >= 28) { // S15: this server goes over to greet the party of four, then stays with them
+      const tb = TABLES[PARTY4.table], spot = [tb.x - 70, tb.y + 125], g = ease(prog(t, 28.0, 29.1));
+      const [sx, sy] = along(sv.path, 28 * speed + sv.ph);
+      x = lerp(sx, spot[0], g); y = lerp(sy, spot[1], g);
+      ang = g < 1 ? Math.atan2(spot[1] - sy, spot[0] - sx) : Math.atan2(tb.y - y, tb.x - x); trail = false;
+    }
+    if (trail) for (let k = 5; k >= 1; k--) {
+      const [tx, ty] = along(sv.path, u - k * .012);
+      circle(tx, ty, 10 - k, `rgba(200,243,106,${.14 - k * .022})`);
+    }
+    person(x, y, ang, 80 + si, t, { staff: true, tray: si !== 1 });
+  }
+  // the host walks guests in: a couple in S3 (so nobody is at the stand), a party of four in S15
+  for (const party of [PARTY2, PARTY4]) {
+    const tb = TABLES[party.table], sts = seats(tb), from = party.from;
+    if (t < from - .05) continue;
+    const route = [[0, 940], [0, 770], [tb.x + 40, tb.y + 150], [tb.x, tb.y + (tb.n === 4 ? 112 : 104)]];
+    if (t < from + 2.3) { // the host leads them in, then heads back to the stand
+      const hk = ease(prog(t, from, from + .95)), home = ease(prog(t, from + 1.1, from + 2.3));
+      const [px, py] = pathPoint(route, hk), [nx, ny] = pathPoint(route, Math.min(1, hk + .02));
+      const hx = lerp(px, HOST.x + 130, home), hy = lerp(py, HOST.y - 80, home);
+      person(hx, hy, home > 0 ? Math.atan2(HOST.y - 80 - py, HOST.x + 130 - px) : Math.atan2(ny - py, nx - px), 90, t, { staff: true });
+    }
+    // nearest chair first; each guest walks in, then curves round the table to a chair
+    (tb.n === 4 ? [2, 1, 3, 0] : [2, 0]).forEach((side, j) => {
+      const s = sts.find(q => q.side === side), d = j * .13;
+      const k = ease(prog(t, from + .12 + d, from + 1.0 + d)) * .97;
+      const [gx, gy] = pathPoint(route, k), [nx, ny] = pathPoint(route, Math.min(1, k + .02));
+      const u = ease(prog(t, from + 1.0 + d, from + 1.4 + d));
+      const cx = side === 0 ? tb.x - 130 : side === 1 ? tb.x + 80 : side === 3 ? tb.x - 80 : (gx + s.x) / 2;
+      const cy = side === 0 ? tb.y : side === 2 ? (gy + s.y) / 2 : tb.y + 80;
+      const x = (1 - u) ** 2 * gx + 2 * (1 - u) * u * cx + u * u * s.x, y = (1 - u) ** 2 * gy + 2 * (1 - u) * u * cy + u * u * s.y;
+      person(x, y, u < .6 ? Math.atan2(ny - gy, nx - gx) : Math.atan2(tb.y - s.y, tb.x - s.x), party.table * 5 + j * 3, t);
+    });
+  }
+}
+function ringing(t) {
+  // when the host-stand phone is ringing: S1 and the soft ring in S3
+  return (t >= 0 && t < 1.85) || (t >= 4.6 && t < 5.4);
+}
+function hostStand(t) {
+  const { x, y, w, h } = HOST;
+  ctx.save(); ctx.translate(12, 16); fillRR(x - w / 2, y - h / 2, w, h, 12, 'rgba(0,0,0,.4)'); ctx.restore();
+  const g = ctx.createLinearGradient(x - w / 2, y - h / 2, x + w / 2, y + h / 2); g.addColorStop(0, '#2e2119'); g.addColorStop(1, '#1f1712');
+  fillRR(x - w / 2, y - h / 2, w, h, 12, g, '#3a2c23', 2 * PX);
+  ctx.save(); rr(x - w / 2, y - h / 2, w, h, 12); ctx.clip(); ctx.strokeStyle = 'rgba(70,52,40,.5)'; ctx.lineWidth = 1.2 * PX;
+  for (let i = 0; i < 14; i++) { ctx.beginPath(); const yy = y - h / 2 + 6 + i * 7.2; ctx.moveTo(x - w / 2, yy); for (let s = 0; s <= 12; s++) ctx.lineTo(x - w / 2 + s * w / 12, yy + Math.sin(s * .9 + i * 1.7) * 1.4); ctx.stroke(); }
+  ctx.restore();
+  // a little leather reservation book next to the phone
+  fillRR(x + 30, y - 34, 52, 68, 5, '#1e2a22', '#2c3a30', 1.5 * PX); ctx.fillStyle = '#2c3a30'; ctx.fillRect(x + 34, y - 34, 3 * PX, 68);
+  // the phone, buzzing when it rings
+  const f = Math.floor(t * FPS), buzz = ringing(t) ? 1 : 0;
+  const jx = buzz * (hash2(f, 1) - .5) * 1.2, jy = buzz * (hash2(f, 2) - .5) * 1.2, jr = buzz * (hash2(f, 3) - .5) * .02;
+  ctx.save(); ctx.translate(PHONE.x + jx, PHONE.y + jy); ctx.rotate(PHONE.rot + jr); ctx.scale(PHONE.s, PHONE.s);
+  device(() => {
+    if (t < 2) incomingScreen(t);
+    else if (t < 8) { if (ringing(t)) incomingScreen(t); else lockScreen(t); }
+    else darkScreen();
+  });
+  ctx.restore();
+  // rings pulsing out of the phone while nobody picks it up
+  if (ringing(t) && t > 4) for (let i = 0; i < 3; i++) {
+    const p = (t * 1.4 + i / 3) % 1;
+    circle(PHONE.x, PHONE.y, 50 + p * 120, null, `rgba(255,121,107,${.55 * (1 - p)})`, 3 * PX);
+  }
+}
+// the call that was a booking, struck out (S4)
+function lostBooking(t) {
+  if (t < 6.25 || t > 8) return;
+  const pop = back(prog(t, 6.3, 6.62)), fall = ease(prog(t, 7.35, 7.95));
+  const x = lerp(PHONE.x, -235, easeOut(prog(t, 6.3, 6.62))), y = lerp(PHONE.y, 448, easeOut(prog(t, 6.3, 6.62))) + fall * 30;
+  ctx.save(); ctx.translate(x, y); ctx.scale(pop, pop); ctx.rotate(-.03 + fall * .06); ctx.globalAlpha = 1 - fall * .7;
+  fillRR(-172, -70, 344, 140, 20, '#1d1413', 'rgba(255,121,107,.6)', 2);
+  circle(-116, 0, 34, 'rgba(255,121,107,.14)', 'rgba(255,121,107,.5)', 1.5);
+  icon('calendar', -116, 0, 32, C.coral, 1.7);
+  txt('Table for 4', -66, -8, { size: 30, weight: 700 });
+  txt('tomorrow · 7:30 PM', -66, 28, { size: 20, weight: 600, color: '#dcb5ae' });
+  const chip = 'MISSED CALL', cw = tw(chip, 12, 800, 1.6) + 18;
+  fillRR(164 - cw, -60, cw, 24, 12, C.coral); txt(chip, 164 - cw + 9, -43.5, { size: 12, weight: 800, color: C.coralInk, ls: 1.6 });
+  claim('lost-booking', 'keep', -172, -70, 344, 140);
+  drawOn(scribbleLine(-80, -34, 150, 22, .02), prog(t, 6.9, 7.08), { col: C.coral, w: 9, seed: 4 });
+  drawOn(scribbleLine(-78, 22, 150, -30, -.03), prog(t, 7.05, 7.23), { col: C.coral, w: 9, seed: 9 });
+  ctx.restore();
+}
+
+// ---------- cameras ----------
+function withCamera(cam, fn) {
+  ctx.save(); ctx.translate(W / 2, H / 2); ctx.rotate(cam.rot || 0); ctx.scale(cam.k, cam.k); ctx.translate(-cam.cx, -cam.cy);
+  const px = PX; PX = 1 / cam.k; fn(); PX = px; ctx.restore();
+}
+function anchorCam(A, sx, sy, k, rot = 0) { // camera that shows world point A at screen point (sx, sy)
+  const dx = (sx - W / 2) / k, dy = (sy - H / 2) / k, c = Math.cos(-rot), s = Math.sin(-rot);
+  return { cx: A.x - (dx * c - dy * s), cy: A.y - (dx * s + dy * c), k, rot };
+}
+function handheld(t, amt = 1) {
+  return { x: (vnoise(t * .7, 1) - .5) * 7 * amt, y: (vnoise(t * .6, 5) - .5) * 7 * amt, r: (vnoise(t * .5, 9) - .5) * .008 * amt };
+}
+// keyframed camera; a key may be a function of time, so it can follow something that moves
+function track(keys, t) {
+  const V = v => typeof v === 'function' ? v(t) : v;
+  if (t <= keys[0][0]) return V(keys[0][1]);
+  for (let i = 1; i < keys.length; i++) {
+    const [t1, k1, e = ease] = keys[i], [t0, k0] = keys[i - 1];
+    if (t <= t1) {
+      const p = e(prog(t, t0, t1)), v0 = V(k0), v1 = V(k1);
+      return { cx: lerp(v0.cx, v1.cx, p), cy: lerp(v0.cy, v1.cy, p), k: Math.exp(lerp(Math.log(v0.k), Math.log(v1.k), p)), rot: 0 };
+    }
+  }
+  return V(keys[keys.length - 1][1]);
+}
+const lin = t => t;
+const K_ECU = 10.4, UPRIGHT = -PHONE.rot + .035;
+function floorCam(t) {
+  const hh = handheld(t);
+  if (t < 4) { // punch in on each ring, then on every missed call
+    const punch = t < 2 ? .05 * Math.exp(-(t % 1) * 7) : .03 * Math.exp(-((t - 2) % .5) * 10);
+    return anchorCam(PHONE, 540 + hh.x, 1170 + hh.y, K_ECU * (1 + .025 * t) * (1 + punch), UPRIGHT + hh.r);
+  }
+  if (t < 6) { // pull out of the phone, which stays anchored on screen while the room opens up
+    const p = ease(prog(t, 4.0, 5.35)), k0 = K_ECU * 1.1, k1 = .93;
+    const k = Math.exp(lerp(Math.log(k0), Math.log(k1), p)) * (1 + .02 * prog(t, 5.35, 6));
+    const ex = W / 2 + k1 * (PHONE.x - ROOM_C.x), ey = H / 2 + k1 * (PHONE.y - ROOM_C.y);
+    return anchorCam(PHONE, lerp(540, ex, p) + hh.x * (1 - p), lerp(1170, ey, p) + hh.y * (1 - p), k, lerp(UPRIGHT, 0, p));
+  }
+  if (t < 8) {
+    const c = track([[6.0, { cx: ROOM_C.x, cy: ROOM_C.y, k: .93 * 1.02 }], [6.55, { cx: -235, cy: 424, k: 1.9 }], [8.0, { cx: -232, cy: 430, k: 2.04 }, t => t]], t);
+    return { ...c, cx: c.cx + hh.x / c.k, cy: c.cy + hh.y / c.k };
+  }
+  // S15: the party of four walks in from the door to table 10, the host goes back to the stand
+  const c = track([[28.0, { cx: 10, cy: 480, k: 1.32 }], [30.0, { cx: -45, cy: 410, k: 1.55 }]], t);
+  return { ...c, cx: c.cx + hh.x / c.k, cy: c.cy + hh.y / c.k };
+}
+// the studio: the guest's phone at the world origin, the camera punching in on the app
+// a camera that shows page point (x, y) at screen (540, sy) with zoom k
+const focus = (x, y, scroll, sy, k) => ({ cx: pageX(x), cy: pageY(y, scroll) - (sy - H / 2) / k, k });
+// follow the newest transcript line, like the app scrolling to latest
+function follow(t, k) {
+  const L = transcriptLayout(t), bottom = PG.areaTop + 16 + Math.min(L.height, L.view);
+  return focus(195, bottom, scrollAt(t), 1390, k);
+}
+const RECEIPT_C = () => [211, PG.outcome + 127];
+function studioCam(t) {
+  const hh = handheld(t, .8), sc = scrollAt;
+  const c = track([
+    [9.3, { cx: 0, cy: -1726, k: .95 }],
+    [10.0, { cx: 0, cy: -252.6, k: .95 }, easeOut],
+    [12.0, { cx: 0, cy: -252.6, k: .985 }, lin],
+    [12.25, t => focus(195, PG.orbY + 60, sc(t), 1010, 1.55), expo],   // the orb and "We're listening."
+    [12.8, t => focus(195, PG.orbY + 60, sc(t), 1010, 1.6), lin],
+    [13.2, t => follow(t, 1.9)],
+    [14.0, t => follow(t, 1.92), lin],
+    [14.2, t => follow(t, 2.03), expo],
+    [15.9, t => follow(t, 1.93)],
+    [18.45, t => follow(t, 1.92), lin],
+    [18.6, t => follow(t, 2.05), expo],
+    [19.9, t => follow(t, 1.94)],
+    [20.4, t => focus(...RECEIPT_C(), sc(t), 1060, 2.0)],
+    [21.9, t => focus(...RECEIPT_C(), sc(t), 1060, 2.07), lin],
+    [22.35, t => follow(t, 1.9)],
+    [23.9, t => follow(t, 1.95), lin],
+    [24.3, t => focus(195, PG.voiceY + 10, sc(t), 1010, 2.0)],       // Hindi / English voice
+    [24.6, t => focus(195, PG.voiceY + 10, sc(t), 1010, 2.05), lin],
+    [24.95, t => follow(t, 1.9)],
+    [25.95, t => follow(t, 1.95), lin],
+    [26.4, { cx: 0, cy: -483, k: .6 }],
+    [28.0, { cx: 0, cy: -483, k: .63 }, lin],
+  ], t);
+  return { ...c, cx: c.cx + hh.x / c.k, cy: c.cy + hh.y / c.k, rot: hh.r };
+}
+function studioWorld(t) {
+  const s = scrollAt(t);
+  glow(0, -100, 1100, '200,243,106', .06);
+  device(() => appPage(t, s));
+  studioMarks(t, s);
+}
+// taps and scribbles on top of the screen recording, in the studio's world coordinates
+function studioMarks(t, s) {
+  const P = (x, y) => [pageX(x), pageY(y, s)];
+  // S6: arrow to the call button, then the tap
+  if (t > 10.3 && t < 11.3) {
+    const [bx, by] = P(318, 752), a = 1 - prog(t, 11.05, 11.3);
+    scribbleArrow(bx + 190, by - 250, bx + 12, by - 12, prog(t, 10.38, 10.8), { w: 9, seed: 2, alpha: a });
+  }
+  if (t > 10.95 && t < 11.6) {
+    const [bx, by] = P(195, PG.ctrlY), p = prog(t, 11.0, 11.5);
+    circle(bx, by, 44 + p * 90, `rgba(255,255,255,${.28 * (1 - p)})`);
+    circle(bx, by, 40, `rgba(255,255,255,${.45 * (1 - prog(t, 11.15, 11.4))})`);
+  }
+  // S8: circle the availability check
+  const r1 = itemRect(t, 14.0);
+  if (r1 && t > 14.9 && t < 16) {
+    const [x0, y0] = P(r1.x, r1.y), w = r1.w * S, h = r1.h * S;
+    drawOn(scribbleEllipse(x0 + w / 2, y0 + h / 2, w * .6, h * .78, 3), prog(t, 15.0, 15.4), { w: 8, seed: 3 });
+  }
+  // S11: arrow + underline on the reference
+  if (t > 20.8 && t < 22) {
+    const [x0, y0] = P(220, PG.outcome + 80 + 60 + 24);
+    scribbleArrow(x0 + 250, y0 + 160, x0 + 110, y0 + 20, prog(t, 20.9, 21.3), { w: 9, seed: 5 });
+    drawOn(scribbleLine(x0 - 4, y0 + 8, x0 + 88, y0 + 4, .03), prog(t, 21.2, 21.45), { w: 8, seed: 6 });
+  }
+  // S12: underline "contain dairy"
+  const r2 = itemRect(t, 23.1);
+  if (r2 && t > 23.7 && t < 24) {
+    const a = r2.box.lines.flat().find(w => w.word.startsWith('contain')), li = r2.box.lines.findIndex(l => l.includes(a));
+    if (a) { // "contain dairy." is one unbreakable token, so it is always on one line
+      const y = r2.y + 36 + li * 24 + 6, [x0, yy] = P(TX.col + a.x - 2, y), [x1] = P(TX.col + a.x + a.w + 2, y);
+      drawOn(scribbleLine(x0, yy, x1, yy, .012), prog(t, 23.72, 23.95), { w: 8, seed: 7 });
+    }
+  }
+  // S13: circle the Hindi / English voice
+  if (t > 24.15 && t < 24.85) {
+    const vl = tw('Host voice', 11, 500), vs = tw('Arjun · Hindi / English', 11, 500) + 30, sx = 195 - (vl + 7 + vs) / 2 + vl + 7 + vs / 2;
+    const [x0, y0] = P(sx, PG.voiceY), a = 1 - prog(t, 24.6, 24.85);
+    drawOn(scribbleEllipse(x0, y0, vs * S * .62, 17 * S, 8), prog(t, 24.2, 24.6), { w: 8, seed: 8, alpha: a });
+  }
+  // keep the newest transcript items clear of captions while the camera follows them, and the receipt
+  const following = (t >= 13.2 && t < 20) || (t >= 22.35 && t < 24) || (t >= 24.95 && t < 26);
+  if (following) {
+    const L = transcriptLayout(t), last = L.items.slice(-2);
+    for (const e of last) {
+      const r = itemRect(t, e.it.at); if (!r) continue;
+      const y0 = Math.max(r.y, PG.areaTop), y1 = Math.min(r.y + r.h, PG.areaBot);
+      if (y1 - y0 < 8) continue;
+      const [x, y] = P(r.x, y0); claim('turn-' + e.it.at, 'keep', x, y, r.w * S, (y1 - y0) * S);
+    }
+  }
+  if (t >= RECEIPT_AT + .2 && t < 22) { const [x, y] = P(66, PG.outcome + 80); claim('receipt', 'keep', x, y, 290 * S, 94 * S); }
+}
+
+// ---------- screen-space scenes ----------
+function backdrop(t, sh) {
+  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
+  const solved = sh.world === 'studio' || sh.world === 'title' || sh.world === 'end' || t >= 28;
+  glow(540, 1150, 1100, solved ? '200,243,106' : '255,121,107', solved ? .07 : .09);
+  // the app's "+" marks, drifting
+  if (sh.world !== 'floor') {
+    ctx.save(); ctx.strokeStyle = 'rgba(170,185,154,.14)'; ctx.lineWidth = 2;
+    for (let i = 0; i < 14; i++) {
+      const x = (hash2(i, 1) * W + t * 6 * (hash2(i, 2) - .5)) % W, y = (hash2(i, 3) * H + t * 10) % H;
+      ctx.beginPath(); ctx.moveTo(x - 9, y); ctx.lineTo(x + 9, y); ctx.moveTo(x, y - 9); ctx.lineTo(x, y + 9); ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+function beatPulse(t) { const u = (t % BEAT) / BEAT; return Math.exp(-u * 5); }
+function titleCard(t) {
+  const out = ease(prog(t, 9.35, 9.85));
+  glow(540, 1000, 900 * (1 + prog(t, 8, 8.6)), '200,243,106', .2 * (1 - prog(t, 8, 8.8)) + .05);
+  orb(540, 1000, 3.1 + beatPulse(t) * .08, t, 'speaking', .35 + beatPulse(t) * .5, { alpha: 1.25 * (1 - out), widen: 1.6 });
+  halo(540, 1000, 1 - out);
+  txt('AI VOICE HOST FOR RESTAURANTS', 540, 1460, { size: 26, weight: 700, color: '#aeb5bd', align: 'center', ls: 5, alpha: prog(t, 8.95, 9.25) * (1 - out) });
+}
+function halo(x, y, a) { // a dark pool behind the logo so the orb's rings never cut through the wordmark
+  if (a <= 0) return;
+  ctx.save(); ctx.translate(x, y); ctx.scale(1.9, 1);
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 230); g.addColorStop(0, `rgba(8,9,11,${.9 * a})`); g.addColorStop(.6, `rgba(8,9,11,${.7 * a})`); g.addColorStop(1, 'rgba(8,9,11,0)');
+  ctx.fillStyle = g; ctx.fillRect(-230, -230, 460, 460); ctx.restore();
+}
+function titleLogo(t) {
+  // big, centred logo that flies into the phone's header as the phone rises
+  const s0 = 4.2, x0 = 540 - LOGO_W() * s0 / 2, y0 = 1000;
+  const cam = studioCam(Math.max(t, 9.3)), s = scrollAt(t);
+  const lx = W / 2 + cam.k * (pageX(16) - cam.cx), ly = H / 2 + cam.k * (pageY(34, s) - cam.cy), s1 = S * cam.k;
+  const p = ease(prog(t, 9.4, 10.0));
+  logo(lerp(x0, lx, p), lerp(y0, ly, p), Math.exp(lerp(Math.log(s0), Math.log(s1), p)), 8.0, t);
+  if (p < .5) claim('logo', 'keep', x0, y0 - 16 * s0, LOGO_W() * s0, 32 * s0);
+}
+function featureCards(t) {
+  ctx.fillStyle = `rgba(8,9,11,${.62 * ease(prog(t, 26.0, 26.35))})`; ctx.fillRect(0, 0, W, H);
+  const cards = [
+    ['calendar', 'Fill tables, effortlessly.', 'Checks availability, confirms the details, and returns a booking reference.', 'Reservations, handled'],
+    ['menu', 'Know the menu by heart.', 'Answers from the menu, with prices, dietary preferences, and dish details.', 'Answers with context'],
+    ['wave', 'Keep it conversational.', 'Speak naturally. Change your mind. Interrupt when you need to.', 'Your pace, your language'],
+  ];
+  cards.forEach(([ic, title, body, tag], i) => {
+    const at = 26.1 + i * .35, p = back(prog(t, at, at + .38)), a = prog(t, at, at + .12);
+    if (a <= 0) return;
+    const x = 80 + (1 - p) * 760, y = 610 + i * 272, w = 920, h = 244;
+    ctx.save(); ctx.globalAlpha = a;
+    ctx.shadowColor = 'rgba(0,0,0,.5)'; ctx.shadowBlur = 40; ctx.shadowOffsetY = 14;
+    fillRR(x, y, w, h, 30, '#111416'); ctx.shadowColor = 'transparent';
+    fillRR(x, y, w, h, 30, null, '#2f353c', 2);
+    circle(x + 78, y + 84, 42, 'rgba(200,243,106,.1)', 'rgba(200,243,106,.35)', 2);
+    icon(ic, x + 78, y + 84, 40, '#b1c59b', 1.5);
+    txt(title, x + 146, y + 76, { size: 44, weight: 700, ls: -1 });
+    wrap(body, 28, 500, w - 146 - 44).forEach((line, li) => txt(line.map(q => q.word).join(' '), x + 146, y + 124 + li * 38, { size: 28, weight: 500, color: C.muted }));
+    icon('hook', x + 160, y + 204, 26, '#b6c5a4', 2);
+    txt(tag, x + 182, y + 213, { size: 26, weight: 600, color: '#b6c5a4' });
+    ctx.restore();
+    if (p > .9) claim('card-' + i, 'keep', x, y, w, h);
+  });
+}
+function endCard(t) {
+  const u = t - 30, OY = 700;
+  glow(540, OY, 900, '200,243,106', .12 + .05 * beatPulse(t));
+  orb(540, OY, 2.55, t, u < 2 ? 'speaking' : 'listening', .25 + beatPulse(t) * .35, { alpha: 1.15 * easeOut(prog(u, 0, .5)), widen: 1.5 });
+  halo(540, OY, 1);
+  const s = 4.4, lw = LOGO_W() * s, pop = back(prog(u, 0, .35));
+  ctx.save(); ctx.translate(540, OY); ctx.scale(pop, pop); ctx.translate(-540, -OY);
+  logo(540 - lw / 2, OY, s, null, t); ctx.restore();
+  claim('end-logo', 'keep', 540 - lw / 2, OY - 16 * s, lw, 32 * s);
+  const t1 = easeOut(prog(u, .5, .85)), t2 = easeOut(prog(u, .9, 1.25));
+  txt('Busy tables.', 540, 1100 + (1 - t1) * 30, { size: 64, weight: 600, align: 'center', ls: -2, alpha: t1 });
+  txt('Never a missed welcome.', 540, 1180 + (1 - t2) * 30, { size: 64, weight: 600, align: 'center', ls: -2, color: '#aab1bb', alpha: t2 });
+  claim('tagline', 'text', 110, 1040, 860, 165);
+  const cp = back(prog(u, 1.4, 1.8));
+  if (cp > 0) {
+    const tap = prog(u, 2.4, 2.8), press = u > 2.4 && u < 2.55 ? .96 : 1;
+    ctx.save(); ctx.translate(540, 1360 + (1 - cp) * 140); ctx.scale(press, press); ctx.globalAlpha = clamp(cp);
+    glow(0, 0, 420, '200,243,106', .16);
+    fillRR(-370, -66, 740, 132, 66, C.lime, '#d8eca4', 2);
+    const label = 'Try the interactive demo', lwid = tw(label, 40, 800, -.5);
+    const x0 = -(36 + 20 + lwid + 20 + 32) / 2;
+    icon('phone', x0 + 18, 0, 36, C.limeInk, 1.8);
+    txt(label, x0 + 56, 14, { size: 40, weight: 800, color: C.limeInk, ls: -.5 });
+    icon('arrow', x0 + 56 + lwid + 36, 0, 32, C.limeInk, 2);
+    if (tap > 0 && tap < 1) { circle(250, 0, 26 + tap * 44, `rgba(36,50,23,${.22 * (1 - tap)})`); circle(250, 0, 24, `rgba(255,255,255,${.45 * (1 - tap)})`); }
+    ctx.restore();
+    claim('cta', 'keep', 170, 1294, 740, 132);
+  }
+  txt('no mic needed · link in bio', 540, 1500, { size: 32, weight: 600, align: 'center', color: '#aeb5bd', alpha: easeOut(prog(u, 1.9, 2.3)) });
+  claim('cta-note', 'text', 250, 1470, 580, 44);
+}
+
+// ---------- captions ----------
+const CAP = { size: 62, lh: 100, top: 290, padX: 28, boxH: 88, r: 20, ls: -1.3 };
+function captionLines(ci) {
+  return memo('cap|' + ci, () => CAPTIONS[ci].lines.map(([raw, at, stagger = .055]) => {
+    const words = [];
+    raw.split(/(\[[^\]]+\])/).filter(Boolean).forEach(part => {
+      const hl = part.startsWith('[');
+      (hl ? part.slice(1, -1) : part).split(' ').filter(Boolean).forEach(w => words.push({ w, hl, i: words.length }));
+    });
+    const space = tw(' ', CAP.size, 800, CAP.ls); let x = 0;
+    for (const wd of words) { wd.width = tw(wd.w, CAP.size, 800, CAP.ls); wd.x = x; x += wd.width + space; }
+    return { words, width: x - space, at, stagger, allHl: words.every(q => q.hl) };
+  }));
+}
+function captions(t, sh) {
+  const ci = CAPTIONS.findIndex(c => t >= c.from && t < c.to); if (ci < 0) return;
+  const cap = CAPTIONS[ci], hl = cap.hl === 'lime' ? C.lime : C.coral, hlInk = cap.hl === 'lime' ? '#141c08' : C.coralInk;
+  // a scrim so captions read over the screen recording; words peeking out around a box look messy
+  const sa = (sh.world === 'studio' ? .93 : .62) * prog(t, cap.from, cap.from + .12);
+  const g = ctx.createLinearGradient(0, 0, 0, 800); g.addColorStop(0, `rgba(8,9,11,${sa})`); g.addColorStop(.62, `rgba(8,9,11,${sa})`); g.addColorStop(1, 'rgba(8,9,11,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, 800);
+  captionLines(ci).forEach((L, li) => {
+    const p = prog(t, L.at, L.at + .16); if (p <= 0) return;
+    const bw = L.width + CAP.padX * 2, bx = 540 - bw / 2, by = CAP.top + li * CAP.lh, s = back(p);
+    const start = wd => L.at + wd.i * L.stagger;
+    ctx.save(); ctx.translate(540, by + CAP.boxH / 2); ctx.scale(.86 + .14 * s, .86 + .14 * s); ctx.translate(-540, -(by + CAP.boxH / 2));
+    ctx.globalAlpha = clamp(p * 1.6);
+    ctx.shadowColor = 'rgba(0,0,0,.45)'; ctx.shadowBlur = 26; ctx.shadowOffsetY = 10;
+    fillRR(bx, by, bw, CAP.boxH, CAP.r, L.allHl ? hl : '#f6f7f4');
+    ctx.shadowColor = 'transparent';
+    // the highlighter grows with its words instead of appearing empty
+    const hls = L.words.filter(q => q.hl), shown = hls.filter(q => t >= start(q));
+    if (shown.length && !L.allHl) {
+      const a = hls[0], z = shown[shown.length - 1], zp = easeOut(prog(t, start(z), start(z) + .14));
+      fillRR(bx + CAP.padX + a.x - 12, by + 10, z.x + z.width * zp - a.x + 24, CAP.boxH - 20, 12, hl);
+    }
+    L.words.forEach(wd => {
+      const wi = wd.i, wp = prog(t, L.at + wi * L.stagger, L.at + wi * L.stagger + .14); if (wp <= 0) return;
+      const ws = .55 + .45 * back(wp), cx = bx + CAP.padX + wd.x + wd.width / 2, cy = by + CAP.boxH / 2;
+      ctx.save(); ctx.translate(cx, cy); ctx.scale(ws, ws); ctx.globalAlpha = clamp(wp * 2);
+      txt(wd.w, -wd.width / 2, 2, { size: CAP.size, weight: 800, color: wd.hl || L.allHl ? hlInk : '#0b0c0e', base: 'middle', ls: CAP.ls });
+      ctx.restore();
+    });
+    ctx.restore();
+    claim(`caption-${ci}-${li}`, 'text', bx, by, bw, CAP.boxH);
+  });
+}
+
+// ---------- grain ----------
+const GRAIN = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d'), img = g.createImageData(256, 256), r = rng(11);
+  for (let i = 0; i < img.data.length; i += 4) { const v = r() * 255; img.data[i] = img.data[i + 1] = img.data[i + 2] = v; img.data[i + 3] = 14; }
+  g.putImageData(img, 0, 0); return c;
+})();
+let grainPattern = null;
+function grain(frame) {
+  grainPattern ||= ctx.createPattern(GRAIN, 'repeat');
+  const k = Math.floor(frame / 2);
+  ctx.save(); ctx.translate(Math.floor(hash2(k, 1) * 256), Math.floor(hash2(k, 2) * 256));
+  ctx.globalCompositeOperation = 'overlay'; ctx.fillStyle = grainPattern; ctx.fillRect(-256, -256, W + 512, H + 512); ctx.restore();
+  // vignette
+  const v = ctx.createRadialGradient(W / 2, H / 2, H * .35, W / 2, H / 2, H * .75);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,.35)'); ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+}
+
+// ---------- the frame ----------
+function draw(frame) {
+  const t = frame / FPS, sh = shotAt(t);
+  BOIL = Math.floor(frame / 4); LAYOUT = [];
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.filter = 'none';
+  ctx.textRendering = 'geometricPrecision';
+  backdrop(t, sh);
+  if (sh.world === 'floor') withCamera(floorCam(t), () => { floorWorld(t); lostBooking(t); });
+  if (sh.world === 'title') {
+    titleCard(t);
+    if (t >= 9.3) withCamera(studioCam(t), () => studioWorld(t));
+    titleLogo(t);
+  }
+  if (sh.world === 'studio') withCamera(studioCam(t), () => studioWorld(t));
+  if (sh.id === 'S14') featureCards(t);
+  if (sh.world === 'end') endCard(t);
+  captions(t, sh);
+  grain(frame);
+  window.LAYOUT = LAYOUT;
+}
+
+// ---------- soundtrack: synthesized from BPM, LAYERS and EVENTS ----------
+// Adapted from the soundtrack skill's groove template in iart-ai/javascript-animation-skills
+// (MIT License, Copyright (c) 2026 iart.ai).
+function buildScore(ac) {
+  const T0 = ac.currentTime + (ac instanceof OfflineAudioContext ? 0 : .06);
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+  const comp = ac.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 3; comp.attack.value = .004; comp.release.value = .2; comp.connect(ac.destination);
+  const master = ac.createGain(); master.gain.value = .9; master.connect(comp);
+  const M = ac.createGain(), X = ac.createGain(); M.gain.value = .85; X.gain.value = .8; M.connect(master); X.connect(master);
+  const rev = ac.createConvolver(), wet = ac.createGain(); wet.gain.value = .2; rev.connect(wet); wet.connect(master); M.connect(rev); X.connect(rev);
+  { const n = Math.round(ac.sampleRate * 1.8), ir = ac.createBuffer(2, n, ac.sampleRate);
+    for (let c = 0; c < 2; c++) { const d = ir.getChannelData(c); let s = 99 + c; for (let i = 0; i < n; i++) { s = (s * 1103515245 + 12345) & 0x7fffffff; d[i] = (s / 0x7fffffff * 2 - 1) * Math.pow(1 - i / n, 3.2); } } rev.buffer = ir; }
+  const noise = (() => { const n = ac.sampleRate, buf = ac.createBuffer(1, n, n), d = buf.getChannelData(0); let s = 7; for (let i = 0; i < n; i++) { s = (s * 1103515245 + 12345) & 0x7fffffff; d[i] = s / 0x7fffffff * 2 - 1; } return buf; })();
+  const env = (g, t, a, peak, decay) => { g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(peak, t + a); g.gain.setTargetAtTime(0, t + a, decay); };
+  function osc(bus, t, type, f, peak, a, decay, f2, glide = .05, pan = 0) {
+    const o = ac.createOscillator(), g = ac.createGain(), p = ac.createStereoPanner(); o.type = type; o.frequency.setValueAtTime(f, t);
+    if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + glide); p.pan.value = pan; env(g, t, a, peak, decay); o.connect(g); g.connect(p); p.connect(bus); o.start(t); o.stop(t + a + decay * 7);
+  }
+  function hiss(bus, t, type, f, q, peak, a, decay, f2, glide = .1, pan = 0) {
+    const s = ac.createBufferSource(), fl = ac.createBiquadFilter(), g = ac.createGain(), p = ac.createStereoPanner(); s.buffer = noise;
+    fl.type = type; fl.frequency.setValueAtTime(f, t); if (f2) fl.frequency.exponentialRampToValueAtTime(f2, t + glide); fl.Q.value = q; p.pan.value = pan;
+    env(g, t, a, peak, decay); s.connect(fl); fl.connect(g); g.connect(p); p.connect(bus); s.start(t, (t * 7.3) % .5); s.stop(t + a + decay * 7);
+  }
+  // instruments: a warm, small-hours house kit (soft kick, clap, hats, round bass, string pad, electric piano)
+  const kick = (t, a = .9) => osc(M, t, 'sine', 150, a, .002, .12, 44, .1);
+  const clap = (t, v = 1) => { hiss(M, t, 'bandpass', 1500, .9, .42 * v, .002, .06); hiss(M, t + .012, 'bandpass', 1750, .9, .3 * v, .002, .08); };
+  const hat = (t, a = .1, pan = .3) => hiss(M, t, 'highpass', 7500, .7, a, .001, .025, null, 0, pan);
+  const crash = t => hiss(M, t, 'highpass', 5000, .5, .2, .002, .7);
+  const bass = (t, m, len) => {
+    const o = ac.createOscillator(), o2 = ac.createOscillator(), f = ac.createBiquadFilter(), g = ac.createGain();
+    o.type = 'triangle'; o2.type = 'sine'; o.frequency.value = o2.frequency.value = hz(m); f.type = 'lowpass'; f.frequency.value = 700;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(.2, t + .01); g.gain.setTargetAtTime(0, t + len * .75, .05);
+    o.connect(f); o2.connect(f); f.connect(g); g.connect(M); o.start(t); o2.start(t); o.stop(t + len + .4); o2.stop(t + len + .4);
+  };
+  const pad = (t, notes, len, a = .04) => notes.forEach((m, i) => {
+    const o = ac.createOscillator(), g = ac.createGain(), f = ac.createBiquadFilter();
+    o.type = 'sawtooth'; o.frequency.value = hz(m); o.detune.value = (i - 1) * 8; f.type = 'lowpass'; f.frequency.value = 1500;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(a * .5, t + .5); g.gain.setValueAtTime(a * .5, t + len - .3); g.gain.linearRampToValueAtTime(0, t + len + .25);
+    o.connect(f); f.connect(g); g.connect(M); o.start(t); o.stop(t + len + .3);
+  });
+  const ep = (t, m, a = .1, pan = 0, len = .45) => { osc(M, t, 'sine', hz(m), a, .004, len, null, 0, pan); osc(M, t, 'sine', hz(m) * 2.01, a * .3, .002, len * .35, null, 0, pan); osc(M, t, 'sine', hz(m) * 3.98, a * .1, .001, .05, null, 0, pan); };
+  const bars = Math.ceil(DUR / BAR); let prev = [];
+  for (let bar = 0; bar < bars; bar++) {
+    const L = LAYERS[bar] || [], t0 = T0 + bar * BAR, ch = chordAt(bar), root = bassAt(bar);
+    const fresh = n => L.includes(n) && !prev.includes(n) && bar > 0;
+    const kv = (fresh('kick4') || fresh('kick2')) && !prev.some(x => x.startsWith('kick')) ? .55 : 1, cv = fresh('clap') ? .6 : 1;
+    if (L.includes('pad')) pad(t0, ch.map(m => m + 12), BAR);
+    if (L.includes('padSoft')) pad(t0, ch.map(m => m + 12), BAR, .03);
+    if (L.includes('crash')) crash(t0);
+    for (let s = 0; s < 16; s++) {
+      const t = t0 + s * BEAT / 4, on = s % 4 === 0;
+      if (L.includes('kick4') && on) kick(t, .9 * kv);
+      if (L.includes('kick2') && (s === 0 || s === 8)) kick(t, .6 * kv);
+      if (L.includes('clap') && (s === 4 || s === 12)) clap(t, cv);
+      if (L.includes('hat8') && s % 2 === 0 && !on) hat(t);
+      if (L.includes('hat16') && !on) hat(t, s % 2 ? .055 : .1, s % 2 ? -.3 : .3);
+      if (L.includes('bassHalf') && (s === 0 || s === 8)) bass(t, root, 2 * BEAT);
+      if (L.includes('bass8') && s % 2 === 0) bass(t, root + (s % 8 === 6 ? 12 : 0), BEAT / 2);
+      if (L.includes('keys') && (s === 2 || s === 6 || s === 10 || s === 14)) ch.forEach(m => ep(t, m + 12, .045, 0, .22));
+      if (L.includes('lead')) ep(t, [ch[0], ch[1], ch[2], ch[1] + 12][s % 4] + 12, .04, s % 2 ? .35 : -.35, .18);
+      if (L.includes('pluck') && on) ep(t, [ch[2], ch[1], ch[0], ch[1]][s / 4] + 12, .09, 0, .5);
+    }
+    prev = L;
+  }
+  // a classic two-tone phone ring: 16 Hz clapper on two sines, ring-ring
+  const ringTone = (t, peak) => [[0, .38], [.5, .38]].forEach(([d, len]) => [1046, 1318].forEach(f => {
+    const o = ac.createOscillator(), am = ac.createGain(), lfo = ac.createOscillator(), lg = ac.createGain(), g = ac.createGain(), hp = ac.createBiquadFilter();
+    o.frequency.value = f; lfo.type = 'square'; lfo.frequency.value = 16; lg.gain.value = .5; am.gain.value = .5; hp.type = 'highpass'; hp.frequency.value = 500;
+    lfo.connect(lg); lg.connect(am.gain); o.connect(am); am.connect(hp); hp.connect(g); g.connect(X);
+    const s = t + d; g.gain.setValueAtTime(0, s); g.gain.linearRampToValueAtTime(peak, s + .015); g.gain.setValueAtTime(peak, s + len - .03); g.gain.linearRampToValueAtTime(0, s + len);
+    o.start(s); lfo.start(s); o.stop(s + len + .05); lfo.stop(s + len + .05);
+  }));
+  const FX = {
+    ring: t => ringTone(t, .075), ringSoft: t => ringTone(t, .035),
+    missed: (t, i = 0) => { osc(X, t, 'sine', 988 - i * 20, .11, .003, .05); osc(X, t + .09, 'sine', 740 - i * 20, .11, .003, .12); },
+    whooshIn: t => hiss(X, t, 'bandpass', 300, 1.2, .26, .35, .25, 3500, .45), whooshOut: t => hiss(X, t, 'bandpass', 3500, 1.2, .24, .3, .25, 300, .45),
+    whoosh: t => hiss(X, t, 'bandpass', 500, 1, .18, .12, .12, 2500, .25),
+    riser: t => { hiss(X, t, 'bandpass', 250, 1.4, .34, 1.05, .05, 6000, 1.1); osc(X, t, 'sawtooth', 110, .035, 1.05, .05, 440, 1.1); },
+    sadDown: t => osc(X, t, 'triangle', 523, .12, .01, .25, 262, .45),
+    // a clap roll that builds through the break, so the drop lands as a release, not a jump scare
+    roll: t => [0, .25, .5, .625, .75, .8125, .875, .9375].forEach((d, i) => { const v = .12 + i * .05; hiss(X, t + d, 'bandpass', 1500 + i * 60, .9, v, .002, .05); hiss(X, t + d + .012, 'bandpass', 1800, .9, v * .6, .002, .06); }),
+    pop: (t, i = 0) => osc(X, t, 'sine', 480 + i * 60, .22, .002, .06, 900 + i * 90, .05),
+    popLow: (t, i = 0) => osc(X, t, 'sine', 220 + i * 40, .28, .002, .08, 420 + i * 60, .06, i % 2 ? .35 : -.35),
+    ding: t => { osc(X, t, 'sine', 1568, .16, .002, .3); osc(X, t, 'sine', 2349, .06, .002, .18); },
+    flag: t => { hiss(X, t, 'bandpass', 1800, 1.5, .12, .01, .05); osc(X, t + .04, 'sine', 1319, .17, .002, .3); osc(X, t + .12, 'sine', 1760, .17, .002, .45); },
+    notify: t => { osc(X, t, 'sine', 1319, .14, .002, .2); osc(X, t + .09, 'sine', 1976, .12, .002, .3); },
+    blip: (t, i = 0) => osc(X, t, 'sine', [1175, 1568, 1319][i], .07, .002, .05),
+    tap: t => { hiss(X, t, 'highpass', 3000, .7, .12, .001, .012); osc(X, t, 'sine', 1600, .08, .001, .03); },
+    switch: t => hiss(X, t, 'bandpass', 3000, 2, .16, .001, .015),
+    swish: t => hiss(X, t, 'bandpass', 1400, 2.5, .1, .03, .07, 3200, .12),
+    clack: t => { hiss(X, t, 'bandpass', 2200, 1, .18, .001, .03); osc(X, t, 'sine', 160, .18, .002, .05); },
+  };
+  for (const [t, name, arg] of EVENTS) { if (!FX[name]) throw new Error(`score: unknown sfx "${name}"`); FX[name](T0 + t, arg); }
+  master.gain.setValueAtTime(.9, T0 + DUR - 1.2); master.gain.linearRampToValueAtTime(0, T0 + DUR);
+}
+
+window.draw = draw; window.FRAMES = FRAMES; window.FPS = FPS; window.W = W; window.H = H;
+window.CUES = SHOTS.slice(1).map(s => s.from);
+window.SCORE = ac => buildScore(ac);
+window.READY = FONTS_READY;
+
+// live preview when opened directly (render.mjs loads the page with ?render)
+if (!new URLSearchParams(location.search).has('render')) {
+  FONTS_READY.then(() => {
+    let start = performance.now(), ac = null;
+    const loop = () => { draw(Math.floor((performance.now() - start) / 1000 * FPS) % FRAMES); requestAnimationFrame(loop); };
+    loop();
+    addEventListener('click', () => {
+      if (ac) ac.close(); ac = new AudioContext(); window.SCORE(ac); start = performance.now() + 60;
+      document.getElementById('hint').textContent = 'Playing with sound · click to restart';
+    });
+  });
+} else document.getElementById('hint').remove();
+</script>
+</body>
+</html>

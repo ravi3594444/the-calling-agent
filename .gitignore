@@ -32,3 +32,8 @@ caddy_config/
 
 # Vercel
 .vercel
+
+# Marketing film: contact sheets, stills and render sidecars are scratch
+promo/ugc-video/out/
+promo/ugc-video/*.cues.json
+promo/ugc-video/*.wav
